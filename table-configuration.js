@@ -1,7 +1,7 @@
 // System Configuration管理モジュール
 // 複数のConfigurationを保存・切り替え可能にする
 
-import { BLOCK_SCHEMA_VERSION, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows } from './block-schema.js';
+import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows } from './block-schema.js';
 
 const STORAGE_KEY = "systemConfigurations";
 
@@ -13,12 +13,46 @@ let warnedActiveConfigNotFound = false;
 
 // 初期Configuration構造
 function createDefaultConfiguration(id, name) {
+  const defaultBlocks = [
+    {
+      blockId: 'ObjectPlane-1',
+      blockType: 'ObjectPlane',
+      role: null,
+      constraints: {},
+      parameters: {
+        objectDistanceMode: 'INF'
+      },
+      variables: {},
+      metadata: { source: 'default' }
+    },
+    {
+      blockId: 'Stop-1',
+      blockType: 'Stop',
+      role: null,
+      constraints: {},
+      parameters: {
+        semiDiameter: DEFAULT_STOP_SEMI_DIAMETER
+      },
+      variables: {},
+      metadata: { source: 'default' }
+    },
+    {
+      blockId: 'ImagePlane-1',
+      blockType: 'ImagePlane',
+      role: null,
+      constraints: {},
+      parameters: undefined,
+      variables: {},
+      metadata: { source: 'default' }
+    }
+  ];
+
   return {
     id: id,
     name: name,
     // Block schema (canonical for AI designs; optional during transition)
     schemaVersion: BLOCK_SCHEMA_VERSION,
-    blocks: [],
+    blocks: defaultBlocks,
     source: [],
     object: [],
     opticalSystem: [],
