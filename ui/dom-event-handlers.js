@@ -4768,6 +4768,9 @@ function createDefaultConfiguration(id, name) {
   return {
     id: id,
     name: name,
+        // Block schema (canonical). Empty array means "no blocks yet" but still editable.
+        schemaVersion: BLOCK_SCHEMA_VERSION,
+        blocks: [],
     source: [],
     object: [],
     opticalSystem: [],

@@ -1,7 +1,7 @@
 // System Configuration管理モジュール
 // 複数のConfigurationを保存・切り替え可能にする
 
-import { configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows } from './block-schema.js';
+import { BLOCK_SCHEMA_VERSION, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows } from './block-schema.js';
 
 const STORAGE_KEY = "systemConfigurations";
 
@@ -17,8 +17,8 @@ function createDefaultConfiguration(id, name) {
     id: id,
     name: name,
     // Block schema (canonical for AI designs; optional during transition)
-    schemaVersion: null,
-    blocks: null,
+    schemaVersion: BLOCK_SCHEMA_VERSION,
+    blocks: [],
     source: [],
     object: [],
     opticalSystem: [],
