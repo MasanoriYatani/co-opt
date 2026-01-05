@@ -1395,7 +1395,7 @@ function setupLoadButton() {
 function setupClearStorageButton() {
     const clearStorageBtn = document.getElementById('clear-storage-btn');
     if (clearStorageBtn) {
-        clearStorageBtn.addEventListener('click', function() {
+        clearStorageBtn.addEventListener('click', async function() {
             const confirmed = confirm('すべての保存データを削除してもよろしいですか？この操作は元に戻せません。');
             if (confirmed) {
                 try {
@@ -1409,8 +1409,162 @@ function setupClearStorageButton() {
                     localStorage.removeItem('loadedFileWarn'); // load warning flag もクリア
                     localStorage.removeItem('systemConfigurations'); // Configurationsもクリア
                     localStorage.removeItem('systemData'); // System Dataもクリア
+
+                    // After clearing, immediately bootstrap a default design (same behavior as Load).
+                    // This keeps Design Intent editable without requiring manual file selection.
+                    try {
+                        // NOTE: keep this as a string literal so the GitHub Pages docs builder can include it.
+                        const res = await fetch('defaults/default-load.json', { cache: 'no-store' });
+                        if (!res.ok) throw new Error(`Failed to fetch default JSON: ${res.status} ${res.statusText}`);
+                        const text = await res.text();
+                        const parsed = JSON.parse(text);
+
+                        // Reuse the Load pipeline (normalize -> validate/derive blocks -> expand active -> persist).
+                        // We only persist to storage here; the page will reload afterwards.
+                        let allData = parsed;
+                        setLoadWarnUIFlag(false);
+                        const normalizedResult = normalizeDesign(allData);
+                        // If normalization emits fatal issues, fall back to empty state.
+                        const fatalNorm = (normalizedResult.issues || []).some(i => i && i.severity === 'fatal');
+                        if (!fatalNorm) {
+                            allData = normalizedResult.normalized;
+                            const candidateConfig = allData?.configurations;
+                            const cfgList = Array.isArray(candidateConfig?.configurations) ? candidateConfig.configurations : [];
+
+                            const issues = [];
+                            const countBlocksByType = (blocks) => {
+                                const out = { Lens: 0, Doublet: 0, Triplet: 0, AirGap: 0, Stop: 0, ImagePlane: 0, Other: 0 };
+                                if (!Array.isArray(blocks)) return out;
+                                for (const b of blocks) {
+                                    const t = String(b?.blockType ?? '');
+                                    if (Object.prototype.hasOwnProperty.call(out, t)) out[t]++;
+                                    else out.Other++;
+                                }
+                                return out;
+                            };
+                            const blocksLookSuspicious = (cfg) => {
+                                try {
+                                    const blocks = cfg?.blocks;
+                                    if (!Array.isArray(blocks) || blocks.length === 0) return false;
+                                    const isNumericish = (v) => {
+                                        if (typeof v === 'number') return Number.isFinite(v);
+                                        const s = String(v ?? '').trim();
+                                        if (!s) return false;
+                                        return /^[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?$/i.test(s);
+                                    };
+                                    for (const b of blocks) {
+                                        const type = String(b?.blockType ?? '');
+                                        if (type === 'Lens') {
+                                            const mat = b?.parameters?.material;
+                                            if (isNumericish(mat)) return true;
+                                        }
+                                        if (type === 'Doublet' || type === 'Triplet') {
+                                            const m1 = b?.parameters?.material1;
+                                            const m2 = b?.parameters?.material2;
+                                            const m3 = b?.parameters?.material3;
+                                            if (isNumericish(m1) || isNumericish(m2) || isNumericish(m3)) return true;
+                                        }
+                                    }
+                                    return false;
+                                } catch (_) {
+                                    return false;
+                                }
+                            };
+
+                            for (const cfg of cfgList) {
+                                try {
+                                    const legacyRows = Array.isArray(cfg?.opticalSystem) ? cfg.opticalSystem : null;
+                                    if (!legacyRows || legacyRows.length === 0) continue;
+
+                                    const hasBlocks = configurationHasBlocks(cfg);
+                                    const suspicious = hasBlocks && blocksLookSuspicious(cfg);
+                                    const existingCounts = hasBlocks ? countBlocksByType(cfg.blocks) : null;
+
+                                    const derived = deriveBlocksFromLegacyOpticalSystemRows(legacyRows);
+                                    const hasFatal = Array.isArray(derived?.issues) && derived.issues.some(i => i && i.severity === 'fatal');
+                                    if (hasFatal) {
+                                        if (!hasBlocks) {
+                                            if (!cfg.metadata || typeof cfg.metadata !== 'object') cfg.metadata = {};
+                                            cfg.metadata.importAnalyzeMode = true;
+                                        }
+                                        continue;
+                                    }
+
+                                    const derivedCounts = countBlocksByType(derived?.blocks);
+                                    const wouldIncreaseDoublets = !!existingCounts && (derivedCounts.Doublet > existingCounts.Doublet);
+                                    if (!hasBlocks || suspicious || wouldIncreaseDoublets) {
+                                        cfg.schemaVersion = cfg.schemaVersion || BLOCK_SCHEMA_VERSION;
+                                        cfg.blocks = Array.isArray(derived?.blocks) ? derived.blocks : [];
+                                        if (!cfg.metadata || typeof cfg.metadata !== 'object') cfg.metadata = {};
+                                        cfg.metadata.importAnalyzeMode = false;
+                                    }
+                                    if (Array.isArray(derived?.issues) && derived.issues.length > 0) {
+                                        issues.push(...derived.issues);
+                                    }
+                                } catch (e) {
+                                    issues.push({ severity: 'warning', phase: 'validate', message: `Blocks conversion failed unexpectedly: ${e?.message || String(e)}` });
+                                }
+                            }
+
+                            for (const cfg of cfgList) {
+                                if (configurationHasBlocks(cfg)) {
+                                    issues.push(...validateBlocksConfiguration(cfg));
+                                }
+                            }
+
+                            // Expand active config if it has blocks so OpticalSystemTableData is usable immediately.
+                            try {
+                                const activeId = candidateConfig?.activeConfigId || 1;
+                                const activeCfg = cfgList.find(c => c.id === activeId) || cfgList[0];
+                                if (activeCfg && configurationHasBlocks(activeCfg)) {
+                                    const expanded = expandBlocksToOpticalSystemRows(activeCfg.blocks);
+                                    issues.push(...expanded.issues);
+                                    // Prefer keeping legacy opticalSystem rows if present; otherwise use expanded.
+                                    if (!Array.isArray(activeCfg.opticalSystem) || activeCfg.opticalSystem.length === 0) {
+                                        activeCfg.opticalSystem = expanded.rows;
+                                    }
+                                }
+                            } catch (e) {
+                                issues.push({ severity: 'warning', phase: 'expand', message: `Expand failed: ${e?.message || String(e)}` });
+                            }
+
+                            // Persist configurations wrapper.
+                            localStorage.setItem('systemConfigurations', JSON.stringify(candidateConfig));
+
+                            // Persist table data (match Load behavior as closely as possible).
+                            const activeId = candidateConfig?.activeConfigId || 1;
+                            const activeCfg = cfgList.find(c => c.id === activeId) || cfgList[0] || null;
+                            const effectiveSource = allData.source ?? activeCfg?.source ?? [];
+                            const effectiveObject = allData.object ?? activeCfg?.object ?? [];
+                            const effectiveOpticalSystem = (activeCfg && configurationHasBlocks(activeCfg) && Array.isArray(activeCfg.opticalSystem))
+                                ? activeCfg.opticalSystem
+                                : (allData.opticalSystem ?? activeCfg?.opticalSystem ?? []);
+                            const effectiveMeritFunction = allData.meritFunction ?? candidateConfig?.meritFunction ?? [];
+                            const effectiveSystemRequirements = allData.systemRequirements ?? candidateConfig?.systemRequirements ?? [];
+                            const effectiveSystemData = allData.systemData ?? activeCfg?.systemData ?? null;
+
+                            saveSourceTableData(effectiveSource || []);
+                            saveObjectTableData(effectiveObject || []);
+                            saveLensTableData(effectiveOpticalSystem || []);
+                            if (effectiveMeritFunction) localStorage.setItem('meritFunctionData', JSON.stringify(effectiveMeritFunction));
+                            if (effectiveSystemRequirements) localStorage.setItem('systemRequirementsData', JSON.stringify(effectiveSystemRequirements));
+                            if (effectiveSystemData) localStorage.setItem('systemData', JSON.stringify(effectiveSystemData));
+
+                            // Keep consistent UX: show a loaded file name.
+                            localStorage.setItem('loadedFileName', 'defaults/default-load.json');
+
+                            // If there were warnings, set the warning UI flag.
+                            const hasWarnings = (normalizedResult.issues || []).some(i => i && i.severity === 'warning') || (issues || []).some(i => i && i.severity === 'warning');
+                            if (hasWarnings) {
+                                try { localStorage.setItem('loadedFileWarn', '1'); } catch (_) {}
+                                setLoadWarnUIFlag(true);
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ [ClearStorage] Failed to load default JSON after clear:', e);
+                    }
                     
-                    alert('ローカルストレージがクリアされました。ページをリロードします。');
+                    alert('ローカルストレージがクリアされました。デフォルト設計を読み込み、ページをリロードします。');
                     console.log('✅ ローカルストレージがクリアされました');
                     location.reload();
                 } catch (error) {
