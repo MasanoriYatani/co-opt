@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>クロスビーム描画デバッグ</title>
+</head>
+<body>
+    <h1>クロスビーム描画デバッグ</h1>
+    <button id="testButton">クロスビーム生成テスト</button>
+    <div id="output"></div>
+
+    <script type="module">
+        import { generateInfiniteSystemCrossBeam } from './gen-ray-cross-infinite.js';
+        
+        const output = document.getElementById('output');
+        
+        function log(message) {
+            console.log(message);
+            output.innerHTML += '<div>' + message + '</div>';
+        }
+        
+        document.getElementById('testButton').addEventListener('click', async () => {
+            try {
+                output.innerHTML = '';
+                log('🔍 クロスビーム生成テスト開始...');
+                
+                // 簡単なテスト用光学系データ
+                const testOpticalSystem = [
+                    { surface: 0, radius: Infinity, thickness: 10, material: 'AIR', semidiaRadius: 15 },
+                    { surface: 1, radius: 50, thickness: 5, material: 'BK7', semidiaRadius: 12 },
+                    { surface: 2, radius: -50, thickness: 20, material: 'AIR', semidiaRadius: 12 },
+                    { surface: 3, radius: Infinity, thickness: 0, material: 'AIR', semidiaRadius: 8, stop: true }
+                ];
+                
+                const testAngles = [{ x: 0, y: 0 }]; // 軸上光線
+                
+                log('テスト用光学系準備完了');
+                log(`光学系面数: ${testOpticalSystem.length}`);
+                log(`オブジェクト角度: ${JSON.stringify(testAngles)}`);
+                
+                const result = await generateInfiniteSystemCrossBeam(testOpticalSystem, testAngles, {
+                    rayCount: 5,
+                    crossType: 'both',
+                    wavelength: 0.5876,
+                    debugMode: true,
+                    targetSurfaceIndex: -1
+                });
+                
+                log('✅ クロスビーム生成完了');
+                log(`結果構造: ${JSON.stringify(Object.keys(result))}`);
+                log(`成功フラグ: ${result.success}`);
+                
+                if (result.success) {
+                    log(`総光線数: ${result.allTracedRays ? result.allTracedRays.length : 'undefined'}`);
+                    log(`生成光線数: ${result.allCrossBeamRays ? result.allCrossBeamRays.length : 'undefined'}`);
+                    
+                    if (result.allTracedRays && result.allTracedRays.length > 0) {
+                        const successCount = result.allTracedRays.filter(r => r.success).length;
+                        log(`追跡成功: ${successCount}/${result.allTracedRays.length}`);
+                    }
+                } else {
+                    log(`❌ エラー: ${result.error || 'unknown error'}`);
+                }
+                
+            } catch (error) {
+                log(`❌ 例外エラー: ${error.message}`);
+                console.error('詳細エラー:', error);
+            }
+        });
+    </script>
+</body>
+</html>

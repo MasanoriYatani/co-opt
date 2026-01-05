@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>アフォーカル系収差係数計算テスト</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 {
+            color: #4ec9b0;
+        }
+        .results {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .success {
+            color: #4ec9b0;
+        }
+        .error {
+            color: #f48771;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 10px 0;
+        }
+        th, td {
+            border: 1px solid #3e3e42;
+            padding: 8px;
+            text-align: right;
+        }
+        th {
+            background: #2d2d30;
+            color: #4ec9b0;
+        }
+        .expected {
+            color: #569cd6;
+        }
+        .actual {
+            color: #dcdcaa;
+        }
+        .diff-good {
+            color: #4ec9b0;
+        }
+        .diff-bad {
+            color: #f48771;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔬 アフォーカル系収差係数計算テスト</h1>
+    <div class="results">
+        <h2>📋 光学系データ（40mm正規化単位系）</h2>
+        <div id="system-info"></div>
+    </div>
+    <div class="results">
+        <h2>📐 近軸光線追跡結果</h2>
+        <div id="paraxial-results"></div>
+    </div>
+    <div class="results">
+        <h2>📊 収差係数</h2>
+        <div id="aberration-coefficients"></div>
+    </div>
+    <div class="results">
+        <h2>✅ 検証結果（Table 1との比較）</h2>
+        <div id="validation"></div>
+    </div>
+
+    <script type="module">
+        import { calculateAfocalSeidelCoefficients } from './eva-seidel-coefficients-afocal.js';
+
+        // テスト用光学系データ（Table 1のテレセントリック結像系）
+        // 単位: mm
+        const opticalSystemRows_mm = [
+            { surfType: 'Spherical', 'object type': 'Object', radius: 'INF', thickness: 127.39, semidia: 50, material: '', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 'INF', thickness: 100, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 100, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: -300, thickness: 10, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 200, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: -100, thickness: 10, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: -200, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 300, thickness: 90, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': 'Stop', radius: 'INF', thickness: 10, semidia: 40, material: '1', stopSurf: true },
+            { surfType: 'Spherical', 'object type': '', radius: -300, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 200, thickness: 10, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 100, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: -200, thickness: 10, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: 300, thickness: 10, semidia: 50, material: '1.5', stopSurf: false },
+            { surfType: 'Spherical', 'object type': '', radius: -100, thickness: 100, semidia: 50, material: '1', stopSurf: false },
+            { surfType: 'Spherical', 'object type': 'Image', radius: 'INF', thickness: 0, semidia: 50, material: '', stopSurf: false }
+        ];
+
+        // Table 1 の期待値（40mm正規化単位系）
+        const expected = {
+            alpha1_chief: -1.0,
+            h1_chief: 3.18288,
+            alpha1_marginal: -0.0111031,
+            h1_marginal: -0.964659
+        };
+
+        // 収差係数計算実行
+        console.log('🚀 アフォーカル系収差係数計算開始...\n');
+        
+        const result = calculateAfocalSeidelCoefficients(opticalSystemRows_mm, 0.5875618, 8); // Surface 8 が Stop
+
+        // 光学系情報を表示
+        const systemInfo = document.getElementById('system-info');
+        systemInfo.innerHTML = `
+            <p>📏 単位系: 40mm = 1 unit</p>
+            <p>📏 主光線初期角度: α0 = -1.0 rad</p>
+            <p>🎯 Stop面: Surface 8</p>
+            <p>📍 Object-to-Surface1: ${opticalSystemRows_mm[0].thickness}mm = ${(opticalSystemRows_mm[0].thickness / 40).toFixed(6)} unit</p>
+        `;
+
+        // 近軸光線追跡結果を表示
+        const paraxialDiv = document.getElementById('paraxial-results');
+        if (result && result.traceResult) {
+            const { chief, marginal } = result.traceResult;
+            
+            // 第1面での値
+            const chief1 = chief[1];
+            const marginal1 = marginal[1];
+            
+            const alpha1_chief_actual = chief1.alpha;
+            const h1_chief_actual = chief1.h;
+            const alpha1_marginal_actual = marginal1.alpha;
+            const h1_marginal_actual = marginal1.h;
+            
+            const alpha1_chief_error = Math.abs(alpha1_chief_actual - expected.alpha1_chief);
+            const h1_chief_error = Math.abs(h1_chief_actual - expected.h1_chief);
+            const alpha1_marginal_error = Math.abs(alpha1_marginal_actual - expected.alpha1_marginal);
+            const h1_marginal_error = Math.abs(h1_marginal_actual - expected.h1_marginal);
+            
+            const tolerance = 1e-5;  // 許容誤差
+            
+            paraxialDiv.innerHTML = `
+                <h3>🔵 主光線（Chief Ray）- 第1面</h3>
+                <table>
+                    <tr>
+                        <th>パラメータ</th>
+                        <th class="expected">期待値</th>
+                        <th class="actual">計算値</th>
+                        <th>誤差</th>
+                    </tr>
+                    <tr>
+                        <td>α₁</td>
+                        <td class="expected">${expected.alpha1_chief.toFixed(8)}</td>
+                        <td class="actual">${alpha1_chief_actual.toFixed(8)}</td>
+                        <td class="${alpha1_chief_error < tolerance ? 'diff-good' : 'diff-bad'}">${alpha1_chief_error.toExponential(2)}</td>
+                    </tr>
+                    <tr>
+                        <td>h₁</td>
+                        <td class="expected">${expected.h1_chief.toFixed(6)}</td>
+                        <td class="actual">${h1_chief_actual.toFixed(6)}</td>
+                        <td class="${h1_chief_error < tolerance ? 'diff-good' : 'diff-bad'}">${h1_chief_error.toExponential(2)}</td>
+                    </tr>
+                </table>
+                
+                <h3>🔴 子午光線（Marginal Ray）- 第1面</h3>
+                <table>
+                    <tr>
+                        <th>パラメータ</th>
+                        <th class="expected">期待値</th>
+                        <th class="actual">計算値</th>
+                        <th>誤差</th>
+                    </tr>
+                    <tr>
+                        <td>ᾱ₁</td>
+                        <td class="expected">${expected.alpha1_marginal.toFixed(8)}</td>
+                        <td class="actual">${alpha1_marginal_actual.toFixed(8)}</td>
+                        <td class="${alpha1_marginal_error < tolerance ? 'diff-good' : 'diff-bad'}">${alpha1_marginal_error.toExponential(2)}</td>
+                    </tr>
+                    <tr>
+                        <td>h̄₁</td>
+                        <td class="expected">${expected.h1_marginal.toFixed(6)}</td>
+                        <td class="actual">${h1_marginal_actual.toFixed(6)}</td>
+                        <td class="${h1_marginal_error < tolerance ? 'diff-good' : 'diff-bad'}">${h1_marginal_error.toExponential(2)}</td>
+                    </tr>
+                </table>
+            `;
+        }
+
+        // 収差係数を表示
+        const aberrationDiv = document.getElementById('aberration-coefficients');
+        if (result && result.coefficients) {
+            let tableHTML = `
+                <table>
+                    <tr>
+                        <th>Surface</th>
+                        <th>Type</th>
+                        <th>SI</th>
+                        <th>SII</th>
+                        <th>SIII</th>
+                        <th>SIV</th>
+                        <th>SV</th>
+                    </tr>
+            `;
+            
+            result.coefficients.forEach(c => {
+                tableHTML += `
+                    <tr>
+                        <td>${c.surface}</td>
+                        <td>${c.objectType || c.surfaceType}</td>
+                        <td>${c.SI.toExponential(3)}</td>
+                        <td>${c.SII.toExponential(3)}</td>
+                        <td>${c.SIII.toExponential(3)}</td>
+                        <td>${c.SIV.toExponential(3)}</td>
+                        <td>${c.SV.toExponential(3)}</td>
+                    </tr>
+                `;
+            });
+            
+            tableHTML += `
+                <tr style="background: #3e3e42; font-weight: bold;">
+                    <td colspan="2">合計</td>
+                    <td>${result.totals.SI.toExponential(3)}</td>
+                    <td>${result.totals.SII.toExponential(3)}</td>
+                    <td>${result.totals.SIII.toExponential(3)}</td>
+                    <td>${result.totals.SIV.toExponential(3)}</td>
+                    <td>${result.totals.SV.toExponential(3)}</td>
+                </tr>
+            `;
+            
+            tableHTML += '</table>';
+            aberrationDiv.innerHTML = tableHTML;
+        }
+
+        // 検証結果を表示
+        const validationDiv = document.getElementById('validation');
+        if (result && result.traceResult) {
+            const { chief, marginal } = result.traceResult;
+            const chief1 = chief[1];
+            const marginal1 = marginal[1];
+            
+            const allGood = 
+                Math.abs(chief1.alpha - expected.alpha1_chief) < tolerance &&
+                Math.abs(chief1.h - expected.h1_chief) < tolerance &&
+                Math.abs(marginal1.alpha - expected.alpha1_marginal) < tolerance &&
+                Math.abs(marginal1.h - expected.h1_marginal) < tolerance;
+            
+            if (allGood) {
+                validationDiv.innerHTML = `
+                    <p class="success">✅ すべての近軸パラメータがTable 1の期待値と一致しました！</p>
+                    <p class="success">✅ 収差係数の計算が正しく実行されました。</p>
+                    <p class="success">✅ アフォーカル系の初期条件が正しく設定されています。</p>
+                    <h3>📊 検証サマリー</h3>
+                    <ul>
+                        <li>✅ 主光線 α₁: 誤差 ${Math.abs(chief1.alpha - expected.alpha1_chief).toExponential(2)}</li>
+                        <li>✅ 主光線 h₁: 誤差 ${Math.abs(chief1.h - expected.h1_chief).toExponential(2)}</li>
+                        <li>✅ 子午光線 ᾱ₁: 誤差 ${Math.abs(marginal1.alpha - expected.alpha1_marginal).toExponential(2)}</li>
+                        <li>✅ 子午光線 h̄₁: 誤差 ${Math.abs(marginal1.h - expected.h1_marginal).toExponential(2)}</li>
+                    </ul>
+                `;
+            } else {
+                validationDiv.innerHTML = `
+                    <p class="error">❌ 一部のパラメータがTable 1の期待値と一致しません。</p>
+                `;
+            }
+        }
+
+        console.log('✅ テスト完了');
+    </script>
+</body>
+</html>

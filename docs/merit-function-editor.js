@@ -1,0 +1,3298 @@
+/**
+ * System Evaluation Editor
+ * Zemax/CODE V スタイルのメリット関数エディタ (Tabulator版)
+ */
+
+import { OPERAND_DEFINITIONS, InspectorManager } from './merit-function-inspector.js';
+import { calculateFullSystemParaxialTrace, calculateParaxialData, findStopSurfaceIndex } from './ray-paraxial.js';
+import { traceRay, traceRayHitPoint, calculateSurfaceOrigins, transformPointToLocal } from './ray-tracing.js';
+import { getOpticalSystemRows, getObjectRows, getSourceRows } from './utils/data-utils.js';
+import { calculateSeidelCoefficients } from './eva-seidel-coefficients.js';
+import { calculateAfocalSeidelCoefficientsIntegrated } from './eva-seidel-coefficients-afocal.js';
+import { generateSpotDiagram } from './eva-spot-diagram.js';
+import { createOPDCalculator, WavefrontAberrationAnalyzer } from './eva-wavefront.js';
+import { expandBlocksToOpticalSystemRows } from './block-schema.js';
+import { generateRayStartPointsForObject, setRayEmissionPattern, getRayEmissionPattern } from './optical/ray-renderer.js';
+import { calculateLongitudinalAberration } from './eva-longitudinal-aberration.js';
+import { getTableOpticalSystem, getTableObject, getTableSource } from './core/app-config.js';
+
+function isPlainObject(value) {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cloneJson(v) {
+    try {
+        return JSON.parse(JSON.stringify(v));
+    } catch {
+        return null;
+    }
+}
+
+function parseZernikeUnit(raw) {
+    const s = String(raw ?? '').trim().toLowerCase();
+    if (!s) return 'waves';
+    if (s === 'waves' || s === 'wave' || s === 'w' || s === 'lambda' || s === 'λ') return 'waves';
+    if (s === 'um' || s === 'µm' || s === 'micron' || s === 'microns') return 'um';
+    return 'waves';
+}
+
+function readCoeff(container, noll) {
+    if (!container) return null;
+    const k = String(noll);
+    try {
+        if (Array.isArray(container)) {
+            const v = container[noll];
+            const num = Number(v);
+            return Number.isFinite(num) ? num : null;
+        }
+        const v = container[k];
+        const num = Number(v);
+        return Number.isFinite(num) ? num : null;
+    } catch {
+        return null;
+    }
+}
+
+function toFiniteNumber(v, fallback = 0) {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function isInfiniteSystemFromRows(opticalSystemRows) {
+    const t = opticalSystemRows?.[0]?.thickness;
+    return t === 'INF' || t === 'Infinity' || t === Infinity;
+}
+
+function toFieldSettingFromObjectRow(objRow, index0, isInfiniteSystem) {
+    const pos = String(objRow?.position ?? objRow?.Position ?? objRow?.type ?? '').toLowerCase();
+    const xVal = toFiniteNumber(objRow?.xHeightAngle, 0);
+    const yVal = toFiniteNumber(objRow?.yHeightAngle, 0);
+
+    const isAngleMode = pos === 'angle' || pos === 'field angle' || pos === 'angles';
+    const isHeightMode = pos === 'rectangle' || pos === 'height' || pos === 'point';
+
+    let fieldAngle = { x: 0, y: 0 };
+    let xHeight = 0;
+    let yHeight = 0;
+    let type = objRow?.position ?? objRow?.type ?? '';
+
+    if (isAngleMode) {
+        fieldAngle = { x: xVal, y: yVal };
+        type = 'Angle';
+    } else if (isHeightMode) {
+        xHeight = xVal;
+        yHeight = yVal;
+        type = 'Rectangle';
+    } else {
+        // Fallback: infer from system type.
+        if (isInfiniteSystem) {
+            fieldAngle = { x: xVal, y: yVal };
+            type = 'Angle';
+        } else {
+            xHeight = xVal;
+            yHeight = yVal;
+            type = 'Rectangle';
+        }
+    }
+
+    return {
+        id: objRow?.id || index0 + 1,
+        type,
+        fieldAngle,
+        xHeight,
+        yHeight,
+        objectIndex: index0
+    };
+}
+
+function sampleUnitDiskPoints({ rings = 4, spokes = 12 } = {}) {
+    const pts = [{ x: 0, y: 0 }];
+    const rr = Math.max(1, Math.floor(rings));
+    const ss = Math.max(4, Math.floor(spokes));
+
+    for (let i = 1; i <= rr; i++) {
+        const r = i / rr;
+        const m = ss * i;
+        for (let k = 0; k < m; k++) {
+            const th = (2 * Math.PI * k) / m;
+            pts.push({ x: r * Math.cos(th), y: r * Math.sin(th) });
+        }
+    }
+    return pts;
+}
+
+function computeZernikeFitLive({ opticalSystemData, wavelengthUm, fieldSetting, zernikeMaxNoll = 15 }) {
+    if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return null;
+    if (!Number.isFinite(wavelengthUm) || wavelengthUm <= 0) return null;
+    if (!fieldSetting || typeof fieldSetting !== 'object') return null;
+    const opdCalculator = createOPDCalculator(opticalSystemData, wavelengthUm);
+    const analyzer = new WavefrontAberrationAnalyzer(opdCalculator);
+
+    try {
+        opdCalculator.setReferenceRay(fieldSetting);
+    } catch (_) {
+        // If reference ray setup fails, return null.
+        return null;
+    }
+
+    const pts = sampleUnitDiskPoints({ rings: 4, spokes: 12 });
+
+    const sampleWithOptions = (opts) => {
+        const pupilCoordinates = [];
+        const opds = [];
+        for (const p of pts) {
+            const x = p.x;
+            const y = p.y;
+            let opd = NaN;
+            try {
+                // Use reference-sphere OPD for physically meaningful low-order terms.
+                opd = opdCalculator.calculateOPDReferenceSphere(x, y, fieldSetting, false, opts);
+            } catch (_) {
+                opd = NaN;
+            }
+            if (!Number.isFinite(opd)) continue;
+            pupilCoordinates.push({ x, y, r: Math.sqrt(x * x + y * y) });
+            opds.push(opd);
+        }
+        return { pupilCoordinates, opds };
+    };
+
+    // Fast path first (may fail for some systems due to aggressive approximations).
+    const fast = sampleWithOptions({ fastMarginalRay: true });
+
+    // Retry with full marginal ray generation if too few valid points.
+    const slow = (fast.pupilCoordinates.length < 6) ? sampleWithOptions({ fastMarginalRay: false }) : null;
+
+    let sampled = fast;
+    if (slow && slow.pupilCoordinates.length > fast.pupilCoordinates.length) {
+        sampled = slow;
+    }
+
+    if (sampled.pupilCoordinates.length < 6) {
+        try {
+            if (typeof window !== 'undefined') {
+                window.__cooptLastZernikeLiveDebug = {
+                    ok: false,
+                    reason: 'insufficient-valid-opd-samples',
+                    wavelengthUm,
+                    zernikeMaxNoll,
+                    fieldSetting,
+                    fastValid: fast.pupilCoordinates.length,
+                    slowValid: slow ? slow.pupilCoordinates.length : null,
+                    lastMarginalRayGenFailure: opdCalculator?._lastMarginalRayGenFailure ?? null,
+                    lastRayCalculation: opdCalculator?.lastRayCalculation ?? null
+                };
+            }
+        } catch (_) {}
+        return null;
+    }
+
+    const wavefrontMap = {
+        pupilCoordinates: sampled.pupilCoordinates,
+        opds: sampled.opds
+    };
+
+    try {
+        const fit = analyzer.fitZernikePolynomials(wavefrontMap, zernikeMaxNoll);
+        try {
+            if (typeof window !== 'undefined') {
+                window.__cooptLastZernikeLiveDebug = {
+                    ok: true,
+                    wavelengthUm,
+                    zernikeMaxNoll,
+                    fieldSetting,
+                    validSamples: sampled.pupilCoordinates.length,
+                    maxNoll: fit?.maxNoll ?? null
+                };
+            }
+        } catch (_) {}
+        return fit;
+    } catch (_) {
+        try {
+            if (typeof window !== 'undefined') {
+                window.__cooptLastZernikeLiveDebug = {
+                    ok: false,
+                    reason: 'fit-failed',
+                    wavelengthUm,
+                    zernikeMaxNoll,
+                    fieldSetting,
+                    validSamples: sampled.pupilCoordinates.length
+                };
+            }
+        } catch (_) {}
+        return null;
+    }
+}
+
+function fieldSettingCacheKey(fieldSetting) {
+    if (!fieldSetting || typeof fieldSetting !== 'object') return 'field:invalid';
+    const type = String(fieldSetting.type ?? '').trim();
+    const fa = fieldSetting.fieldAngle && typeof fieldSetting.fieldAngle === 'object' ? fieldSetting.fieldAngle : { x: 0, y: 0 };
+    const ax = toFiniteNumber(fa.x, 0);
+    const ay = toFiniteNumber(fa.y, 0);
+    const xh = toFiniteNumber(fieldSetting.xHeight, 0);
+    const yh = toFiniteNumber(fieldSetting.yHeight, 0);
+    const oi = Number.isFinite(Number(fieldSetting.objectIndex)) ? Math.floor(Number(fieldSetting.objectIndex)) : 0;
+    return `type=${type}:oi=${oi}:ax=${ax}:ay=${ay}:xh=${xh}:yh=${yh}`;
+}
+
+function parseOverrideKey(variableId) {
+    const s = String(variableId ?? '');
+    const dot = s.indexOf('.');
+    if (dot <= 0) return null;
+    const blockId = s.slice(0, dot);
+    const key = s.slice(dot + 1);
+    if (!blockId || !key) return null;
+    return { blockId, key };
+}
+
+function applyOverridesToBlocks(blocks, overrides) {
+    const cloned = cloneJson(blocks);
+    if (!Array.isArray(cloned)) return Array.isArray(blocks) ? blocks : [];
+    if (!isPlainObject(overrides)) return cloned;
+
+    const byId = new Map();
+    for (const b of cloned) {
+        const id = isPlainObject(b) ? String(b.blockId ?? '') : '';
+        if (id) byId.set(id, b);
+    }
+
+    for (const [varId, rawVal] of Object.entries(overrides)) {
+        const parsed = parseOverrideKey(varId);
+        if (!parsed) continue;
+        const blk = byId.get(String(parsed.blockId));
+        if (!blk || !isPlainObject(blk.parameters)) continue;
+        const n = Number(rawVal);
+        blk.parameters[parsed.key] = Number.isFinite(n) ? n : rawVal;
+    }
+
+    return cloned;
+}
+
+class MeritFunctionEditor {
+    constructor() {
+        this.operands = [];
+        this.table = null;
+        this.totalMeritValue = document.getElementById('total-merit-value');
+        this.inspector = new InspectorManager();
+        this._runtimeCache = null;
+        
+        this.loadFromStorage();
+        this.initializeTable();
+        this.initializeEventListeners();
+    }
+    
+    initializeTable() {
+        // Tabulatorカラム定義
+        const columns = [
+            { title: "Num", field: "id", width: 80, hozAlign: "center", headerSort: true },
+            { 
+                title: "Evaluation Function", 
+                field: "operand", 
+                width: 180, 
+                editor: "list",
+                editorParams: {
+                    values: Object.keys(OPERAND_DEFINITIONS).reduce((acc, key) => {
+                        acc[key] = OPERAND_DEFINITIONS[key].name;
+                        return acc;
+                    }, {})
+                },
+                formatter: (cell) => {
+                    const value = cell.getValue();
+                    return OPERAND_DEFINITIONS[value]?.name || value;
+                },
+                cellEdited: (cell) => this.onOperandChange(cell)
+            },
+            { 
+                title: "Config", 
+                field: "configId", 
+                width: 120, 
+                editor: "list",
+                editorParams: (cell) => {
+                    const configList = this.getConfigurationList();
+                    console.log('🔧 Config dropdown opening with values:', configList);
+                    return {
+                        values: configList
+                    };
+                },
+                formatter: (cell) => {
+                    const configId = cell.getValue();
+                    if (configId === null || configId === undefined) {
+                        return '';
+                    }
+                    return this.getConfigName(configId) || 'Current';
+                },
+                hozAlign: "center"
+            },
+            { title: "-", field: "param1", width: 100, editor: "input", hozAlign: "center" },
+            { title: "-", field: "param2", width: 100, editor: "input", hozAlign: "center" },
+            { title: "-", field: "param3", width: 100, editor: "input", hozAlign: "center" },
+            { title: "-", field: "param4", width: 100, editor: "input", hozAlign: "center" },
+            { 
+                title: "Target", 
+                field: "target", 
+                width: 100, 
+                editor: "input",
+                hozAlign: "center" 
+            },
+            { 
+                title: "Weight", 
+                field: "weight", 
+                width: 100, 
+                editor: "input",
+                hozAlign: "center" 
+            },
+            { 
+                title: "Result", 
+                field: "value", 
+                width: 100, 
+                hozAlign: "center",
+                formatter: (cell) => {
+                    const val = cell.getValue();
+                    return val !== null && val !== undefined ? val.toFixed(6) : '-';
+                },
+                cssClass: "value-cell"
+            },
+            { 
+                title: "Impact", 
+                field: "contribution", 
+                width: 120, 
+                hozAlign: "center",
+                formatter: (cell) => {
+                    const val = cell.getValue();
+                    return val !== null && val !== undefined ? val.toFixed(2) + '%' : '-';
+                },
+                cssClass: "contribution-cell"
+            }
+        ];
+
+        // Tabulator初期化
+        this.table = new Tabulator("#table-merit-function", {
+            data: this.operands,
+            columns: columns,
+            layout: "fitColumns",
+            height: "400px",
+            selectable: true
+        });
+        
+        // 行クリック時に選択状態を1つだけにする（Optical Systemと同様）
+        this.table.on("rowClick", (e, row) => {
+            try {
+                // すべての選択を解除
+                this.table.deselectRow();
+                // クリックした行のみ選択
+                row.select();
+            } catch (error) {
+                console.warn("Row click error:", error);
+            }
+        });
+        
+        // 行選択時にインスペクターを表示し、パラメータカラムヘッダーを更新
+        this.table.on("rowSelected", (row) => {
+            this.inspector.show(row.getData());
+            this.updateParameterHeaders(row.getData());
+        });
+        
+        // 行選択解除時にインスペクターを非表示し、パラメータカラムヘッダーをデフォルトに戻す
+        this.table.on("rowDeselected", () => {
+            this.inspector.hide();
+            this.resetParameterHeaders();
+        });
+        
+        // セル編集時に自動保存
+        this.table.on("cellEdited", (cell) => {
+            this.saveToStorage();
+        });
+    }
+
+    initializeEventListeners() {
+        document.getElementById('add-operand-btn').addEventListener('click', () => this.addOperand());
+        document.getElementById('delete-operand-btn').addEventListener('click', () => this.deleteOperand());
+        document.getElementById('calculate-merit-btn').addEventListener('click', (e) => {
+            // Tabulatorの再描画やフォーカス移動でページが上下にズレることがあるため、スクロール位置を保持する
+            const scrollY = (typeof window !== 'undefined' && typeof window.scrollY === 'number') ? window.scrollY : null;
+            const activeEl = (typeof document !== 'undefined') ? document.activeElement : null;
+
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+
+            this.calculateMerit();
+
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                    try {
+                        if (scrollY !== null && typeof window !== 'undefined' && typeof window.scrollTo === 'function') {
+                            window.scrollTo(0, scrollY);
+                        }
+                        if (activeEl && typeof activeEl.focus === 'function') {
+                            try {
+                                activeEl.focus({ preventScroll: true });
+                            } catch {
+                                activeEl.focus();
+                            }
+                        }
+                    } catch {
+                        // noop
+                    }
+                });
+            }
+        });
+    }
+
+    onOperandChange(cell) {
+        const operand = cell.getValue();
+        const definition = OPERAND_DEFINITIONS[operand];
+        
+        if (definition) {
+            console.log(`オペランド変更: ${operand} - ${definition.description}`);
+        }
+    }
+
+    addOperand(operandType = null, params = {}) {
+        // デフォルトはアクティブなConfiguration
+        let defaultConfigId = "";
+        try {
+            const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+            if (systemConfig && systemConfig.activeConfigId) {
+                defaultConfigId = String(systemConfig.activeConfigId);
+            }
+        } catch (error) {
+            console.warn('Active config ID取得エラー:', error);
+        }
+        
+        const newOperand = {
+            id: this.operands.length + 1,
+            operand: operandType,  // nullを許可
+            configId: params.configId ? String(params.configId) : null,
+            param1: params.param1 || "",
+            param2: params.param2 || "",
+            param3: params.param3 || "",
+            param4: params.param4 || "",
+            target: params.target || "",
+            weight: params.weight || "",
+            value: null,
+            contribution: null
+        };
+
+        // 選択行を取得
+        const selectedRows = this.table.getSelectedRows();
+        
+        if (selectedRows.length > 0) {
+            // 選択行がある場合、最初の選択行の次の位置に挿入
+            const selectedRow = selectedRows[0];
+            const selectedIndex = this.operands.findIndex(op => op.id === selectedRow.getData().id);
+            
+            if (selectedIndex !== -1) {
+                // 配列に挿入
+                this.operands.splice(selectedIndex + 1, 0, newOperand);
+                this.updateRowNumbers();
+                
+                // テーブルに挿入（選択行の下）
+                this.table.addRow(newOperand, false, selectedRow);
+            } else {
+                // 見つからない場合は末尾に追加
+                this.operands.push(newOperand);
+                this.updateRowNumbers();
+                this.table.addRow(newOperand);
+            }
+        } else {
+            // 選択行がない場合は末尾に追加
+            this.operands.push(newOperand);
+            this.updateRowNumbers();
+            this.table.addRow(newOperand);
+        }
+        
+        this.saveToStorage();
+    }
+
+    deleteOperand() {
+        const selectedRows = this.table.getSelectedRows();
+        
+        if (selectedRows.length === 0) {
+            alert('削除する行を選択してください');
+            return;
+        }
+
+        selectedRows.forEach(row => {
+            const index = this.operands.findIndex(op => op.id === row.getData().id);
+            if (index !== -1) {
+                this.operands.splice(index, 1);
+            }
+        });
+
+        this.updateRowNumbers();
+        this.table.setData(this.operands);
+        this.saveToStorage();
+    }
+
+    updateRowNumbers() {
+        this.operands.forEach((op, index) => {
+            op.id = index + 1;
+        });
+    }
+
+    calculateMerit() {
+        console.log('🧮 Merit Function計算中...');
+
+        // 1回の計算実行内で重い計算（Seidel等）を使い回す
+        this._runtimeCache = new Map();
+        
+        let totalMerit = 0;
+        const values = [];
+
+        // 各オペランドの値を計算
+        this.operands.forEach(op => {
+            // 実際の光学計算に置き換える
+            const calculatedValue = this.calculateOperandValue(op);
+
+            const targetRaw = Number(op.target);
+            const weightRaw = Number(op.weight);
+            const target = Number.isFinite(targetRaw) ? targetRaw : 0;
+            const weight = Number.isFinite(weightRaw) ? weightRaw : 1;
+
+            const error = calculatedValue - target;
+            const weightedError = error * error * weight;
+            
+            op.value = calculatedValue;
+            values.push(weightedError);
+            totalMerit += weightedError;
+        });
+
+        // 寄与率を計算
+        this.operands.forEach((op, index) => {
+            op.contribution = totalMerit > 0 ? (values[index] / totalMerit) * 100 : 0;
+        });
+
+        this.table.setData(this.operands);
+        this.totalMeritValue.textContent = totalMerit.toFixed(6);
+        this.saveToStorage();
+        
+        console.log('✅ Merit Function計算完了:', totalMerit);
+
+        // 使い回しキャッシュを破棄
+        this._runtimeCache = null;
+    }
+
+    /**
+     * UIを更新せず、総Merit値のみを返す（最適化ループ向け）。
+     * @returns {number}
+     */
+    calculateMeritValueOnly() {
+        // 1回の計算実行内で重い計算（Seidel等）を使い回す
+        this._runtimeCache = new Map();
+
+        try {
+            let totalMerit = 0;
+
+            for (const op of this.operands) {
+                if (!op || !op.operand) continue;
+
+                const calculatedValue = this.calculateOperandValue(op);
+
+                const targetRaw = Number(op.target);
+                const weightRaw = Number(op.weight);
+                const target = Number.isFinite(targetRaw) ? targetRaw : 0;
+                const weight = Number.isFinite(weightRaw) ? weightRaw : 1;
+
+                const error = calculatedValue - target;
+                const weightedError = error * error * weight;
+                totalMerit += weightedError;
+            }
+
+            return totalMerit;
+        } finally {
+            // 使い回しキャッシュを破棄
+            this._runtimeCache = null;
+        }
+    }
+
+    /**
+     * UIを更新せず、各オペランドの内訳（value/target/error/term/impact%）を返す。
+     * DLS/LM 等で残差ベクトル r(x) を構成する用途を想定。
+     *
+     * 定義:
+     *   error = value - target
+     *   term  = error^2 * weight
+     *   impactPct = 100 * term / sum(term)
+     *   weightedResidual = sqrt(weight) * error  (weight >= 0 のとき)
+     *
+     * @returns {{ total: number, terms: Array<{ id:any, operand:any, configId:any, value:number, target:number, weight:number, error:number, term:number, impactPct:number, weightedResidual:number, sqrtWeight:number }> }}
+     */
+    calculateMeritBreakdownOnly() {
+        // 1回の計算実行内で重い計算（Seidel等）を使い回す
+        this._runtimeCache = new Map();
+
+        try {
+            /** @type {Array<{ id:any, operand:any, configId:any, value:number, target:number, weight:number, error:number, term:number, impactPct:number, weightedResidual:number, sqrtWeight:number }>} */
+            const terms = [];
+
+            let total = 0;
+
+            for (const op of this.operands) {
+                if (!op || !op.operand) continue;
+
+                const value = this.calculateOperandValue(op);
+
+                const targetRaw = Number(op.target);
+                const weightRaw = Number(op.weight);
+                const target = Number.isFinite(targetRaw) ? targetRaw : 0;
+                const weight = Number.isFinite(weightRaw) ? weightRaw : 1;
+
+                const error = value - target;
+                const term = error * error * weight;
+                total += term;
+
+                const sqrtWeight = (weight >= 0) ? Math.sqrt(weight) : NaN;
+                const weightedResidual = Number.isFinite(sqrtWeight) ? (sqrtWeight * error) : NaN;
+
+                terms.push({
+                    id: op.id,
+                    operand: op.operand,
+                    configId: op.configId,
+                    value,
+                    target,
+                    weight,
+                    error,
+                    term,
+                    impactPct: 0,
+                    weightedResidual,
+                    sqrtWeight
+                });
+            }
+
+            const denom = total;
+            if (Number.isFinite(denom) && denom > 0) {
+                for (const t of terms) {
+                    t.impactPct = (t.term / denom) * 100;
+                }
+            } else {
+                for (const t of terms) {
+                    t.impactPct = 0;
+                }
+            }
+
+            return { total, terms };
+        } finally {
+            // 使い回しキャッシュを破棄
+            this._runtimeCache = null;
+        }
+    }
+
+    calculateOperandValue(operand) {
+        // operandのconfigIdに対応する光学系データを取得
+        const opticalSystemData = this.getOpticalSystemDataByConfigId(operand.configId);
+
+        // Spot Size operands can mirror the Spot Diagram algorithm and settings.
+        // However, the Spot Diagram *tables* are always the active configuration.
+        // So when evaluating a non-active config, we must NOT read live UI tables.
+        const isOperandActiveConfig = (() => {
+            try {
+                const opCfg = (operand && operand.configId !== undefined && operand.configId !== null)
+                    ? String(operand.configId).trim()
+                    : '';
+                // Blank means "Current" (active)
+                if (!opCfg) return true;
+                const raw = (typeof localStorage !== 'undefined') ? localStorage.getItem('systemConfigurations') : null;
+                if (!raw) return false;
+                const sys = JSON.parse(raw);
+                const activeId = (sys && sys.activeConfigId !== undefined && sys.activeConfigId !== null)
+                    ? String(sys.activeConfigId)
+                    : '';
+                return !!activeId && opCfg === activeId;
+            } catch (_) {
+                return false;
+            }
+        })();
+
+        // Distinguish "Current" vs explicit config selection.
+        // Only "Current" is allowed to read live UI tables.
+        const isCurrentOperand = (() => {
+            try {
+                const opCfg = (operand && operand.configId !== undefined && operand.configId !== null)
+                    ? String(operand.configId).trim()
+                    : '';
+                return opCfg === '';
+            } catch (_) {
+                return true;
+            }
+        })();
+        
+        const meritFast = (() => {
+            try {
+                const m = (typeof globalThis !== 'undefined') ? globalThis.__cooptMeritFastMode : null;
+                return (m && typeof m === 'object' && m.enabled) ? m : null;
+            } catch {
+                return null;
+            }
+        })();
+
+        switch (operand.operand) {
+            case 'FL':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'FL');
+            case 'EFL':
+                return this.calculateEFLWithBlockSelection(operand, opticalSystemData);
+            case 'BFL':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'BFL');
+            case 'IMD':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'IMD');
+            case 'OBJD':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'OBJD');
+            case 'TSL':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'TSL');
+            case 'BEXP':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'BEXP');
+            case 'EXPD':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'EXPD');
+            case 'EXPP':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'EXPP');
+            case 'ENPD':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'ENPD');
+            case 'ENPP':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'ENPP');
+            case 'ENPM':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'ENPM');
+            case 'PMAG':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'PMAG');
+            case 'FNO_OBJ':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'FNO_OBJ');
+            case 'FNO_IMG':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'FNO_IMG');
+            case 'FNO_WRK':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'FNO_WRK');
+            case 'NA_OBJ':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'NA_OBJ');
+            case 'NA_IMG':
+                return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'NA_IMG');
+            case 'EFFL':
+                return this.calculateEFFL(operand, opticalSystemData);
+            case 'TOT3_SPH':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'I');
+            case 'TOT3_COMA':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'II');
+            case 'TOT3_ASTI':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'III');
+            case 'TOT3_FCUR':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'IV');
+            case 'TOT3_DIST':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'V');
+            case 'TOT_LCA':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'LCA');
+            case 'TOT_TCA':
+                return this.calculateSeidelTotal(operand, opticalSystemData, 'TCA');
+            case 'REAY':
+                return 0.001 + Math.random() * 0.002;
+            case 'RSCE':
+                return 0.01 + Math.random() * 0.005;
+            case 'TRAC':
+                return 0.05 + Math.random() * 0.01;
+            case 'DIST':
+                return 1.5 + Math.random() * 0.5;
+            case 'CLRH':
+                return this.calculateClearanceVsSemidia(operand, opticalSystemData);
+            case 'SPOT_SIZE_ANNULAR':
+                // Spot Diagram-aligned spot size, forced to Annular.
+                return this.calculateSpotSizeUm(operand, opticalSystemData, {
+                    pattern: 'annular',
+                    annularRingCount: meritFast ? meritFast.spotAnnularRingCount : 10,
+                    rayCountOverride: meritFast ? meritFast.spotRayCount : null,
+                    // IMPORTANT: when running under a fast-mode object, missing flags must NOT
+                    // silently flip semantics. Default to semantic-aligned behavior.
+                    useUiDefaults: meritFast ? (meritFast.spotUseUiDefaults !== false) : true,
+                    useUiTables: meritFast ? (meritFast.spotUseUiTables === true) : (isCurrentOperand && isOperandActiveConfig)
+                });
+            case 'SPOT_SIZE_RECT':
+                // "Rectangle" in UI corresponds to grid sampling in ray-renderer.
+                // Spot Diagram-aligned spot size, forced to Rectangle/Grid.
+                return this.calculateSpotSizeUm(operand, opticalSystemData, {
+                    pattern: 'grid',
+                    rayCountOverride: meritFast ? meritFast.spotRayCount : null,
+                    useUiDefaults: meritFast ? (meritFast.spotUseUiDefaults !== false) : true,
+                    useUiTables: meritFast ? (meritFast.spotUseUiTables === true) : (isCurrentOperand && isOperandActiveConfig)
+                });
+            case 'SPOT_SIZE_CURRENT':
+                // Backward compatibility: this operand was removed from the UI.
+                // Migrate its behavior to Annular to keep older saved Requirements functional.
+                return this.calculateSpotSizeUm(operand, opticalSystemData, {
+                    pattern: 'annular',
+                    annularRingCount: meritFast ? meritFast.spotAnnularRingCount : 10,
+                    rayCountOverride: meritFast ? meritFast.spotRayCount : null,
+                    useUiDefaults: meritFast ? (meritFast.spotUseUiDefaults !== false) : true,
+                    useUiTables: meritFast ? (meritFast.spotUseUiTables === true) : (isCurrentOperand && isOperandActiveConfig)
+                });
+            case 'LA_RMS_UM':
+                return this.calculateLongitudinalAberrationRmsUm(operand, opticalSystemData);
+            case 'ZERN_COEFF': {
+                const FAIL = 1e9;
+                const nollRaw = Number(operand?.param1);
+                if (!Number.isFinite(nollRaw)) return FAIL;
+                const noll = Math.floor(nollRaw);
+                if (noll < 0) return FAIL;
+
+                const unit = parseZernikeUnit(operand?.param2);
+                const { source: sourceRows, object: objectRows } = this.getConfigTablesByConfigId(operand?.configId);
+                // param3: λ idx (1-based, blank=Primary)
+                const wavelength = this.getSystemWavelengthFromOperandOrPrimary({ param1: operand?.param3 }, sourceRows);
+                const fieldIdx1 = Number.isFinite(Number(operand?.param4)) ? Math.max(1, Math.floor(Number(operand.param4))) : 1;
+                const objRow = Array.isArray(objectRows) ? objectRows[Math.max(0, Math.min(objectRows.length - 1, fieldIdx1 - 1))] : null;
+                const isInf = isInfiniteSystemFromRows(opticalSystemData);
+                const fieldSetting = toFieldSettingFromObjectRow(objRow || {}, fieldIdx1 - 1, isInf);
+
+                const cfgKey = operand?.configId ? String(operand.configId) : 'active';
+                const maxNollRequested = 15;
+                const cacheKey = `zernike-fit:${cfgKey}:wl=${wavelength}:max=${maxNollRequested}:${fieldSettingCacheKey(fieldSetting)}`;
+                const zernike = (() => {
+                    const cached = this._runtimeCache ? this._runtimeCache.get(cacheKey) : null;
+                    if (cached) return cached;
+                    const fit = computeZernikeFitLive({ opticalSystemData, wavelengthUm: wavelength, fieldSetting, zernikeMaxNoll: maxNollRequested });
+                    if (fit && this._runtimeCache) this._runtimeCache.set(cacheKey, fit);
+                    return fit;
+                })();
+                if (!zernike) return FAIL;
+
+                const coeffWaves = zernike?.coefficientsWaves || null;
+                const coeffUm = zernike?.coefficientsMicrons || null;
+
+                const maxNoll = Number(zernike?.maxNoll);
+                const termMax = Number.isFinite(maxNoll) ? Math.max(1, Math.floor(maxNoll)) : null;
+
+                const getCoeffInUnit = (j) => {
+                    if (unit === 'um') {
+                        const direct = readCoeff(coeffUm, j);
+                        if (direct !== null) return direct;
+                        const w = readCoeff(coeffWaves, j);
+                        if (w === null) return null;
+                        if (!(Number.isFinite(wavelength) && wavelength > 0)) return null;
+                        return w * wavelength;
+                    }
+                    return readCoeff(coeffWaves, j);
+                };
+
+                if (noll === 0) {
+                    // RMS of coefficients: sqrt(sum c_j^2). Exclude piston (j=1) and tilt (j=2,3).
+                    let sumSq = 0;
+
+                    if (termMax !== null) {
+                        for (let j = 4; j <= termMax; j++) {
+                            const c = getCoeffInUnit(j);
+                            if (c === null) continue;
+                            sumSq += c * c;
+                        }
+                        return Number.isFinite(sumSq) ? Math.sqrt(sumSq) : FAIL;
+                    }
+
+                    // Fallback: iterate keys
+                    const container = (unit === 'um' && coeffUm) ? coeffUm : coeffWaves;
+                    if (!container || typeof container !== 'object') return FAIL;
+                    for (const [k, v] of Object.entries(container)) {
+                        const j = Number(k);
+                        if (!Number.isFinite(j) || j < 4) continue;
+                        const c = getCoeffInUnit(Math.floor(j));
+                        if (c === null) continue;
+                        sumSq += c * c;
+                    }
+                    return Number.isFinite(sumSq) ? Math.sqrt(sumSq) : FAIL;
+                }
+
+                const c = getCoeffInUnit(noll);
+                return (c === null) ? FAIL : c;
+            }
+            default:
+                return 0;
+        }
+    }
+
+    calculateEFLWithBlockSelection(operand, opticalSystemData) {
+        // Default: full system EFL (System Data definition)
+        const selRaw = (operand && operand.param2 !== undefined && operand.param2 !== null)
+            ? String(operand.param2).trim()
+            : '';
+        if (!selRaw || /^all$/i.test(selRaw) || /^full$/i.test(selRaw)) {
+            return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'EFL');
+        }
+
+        if (!Array.isArray(opticalSystemData) || opticalSystemData.length < 3) {
+            return 0;
+        }
+
+        // Requires block provenance on rows.
+        const hasProvenance = (() => {
+            try {
+                return opticalSystemData.some(r => r && typeof r === 'object' && r._blockId !== undefined && r._blockId !== null && String(r._blockId).trim() !== '');
+            } catch (_) {
+                return false;
+            }
+        })();
+        if (!hasProvenance) {
+            // Fallback: can't slice by blocks, so return full system EFL.
+            return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'EFL');
+        }
+
+        const tokens = selRaw.split(/[,\s]+/).map(s => String(s).trim()).filter(Boolean);
+        if (tokens.length === 0) {
+            return this.calculatePrimarySystemMetric(operand, opticalSystemData, 'EFL');
+        }
+        const selectedIds = new Set(tokens);
+
+        // Build a subsystem by extracting the selected block surfaces in system order.
+        const picked = [];
+        for (let i = 1; i < opticalSystemData.length - 1; i++) {
+            const row = opticalSystemData[i];
+            if (!row || typeof row !== 'object') continue;
+            const bid = String(row._blockId ?? '').trim();
+            if (!bid) continue;
+            if (!selectedIds.has(bid)) continue;
+            picked.push({ ...row });
+        }
+
+        if (picked.length === 0) {
+            return 0;
+        }
+
+        // Avoid carrying a thickness that jumps into a non-selected block.
+        try {
+            picked[picked.length - 1] = { ...picked[picked.length - 1], thickness: 0 };
+        } catch (_) {}
+
+        const objectRowBase = (opticalSystemData[0] && typeof opticalSystemData[0] === 'object')
+            ? { ...opticalSystemData[0] }
+            : { 'object type': 'Object', thickness: 'INF', comment: 'Object' };
+        // Subsystem EFL definition: evaluate as if object at infinity.
+        const objectRow = { ...objectRowBase, thickness: 'INF' };
+        const imageRow = { 'object type': 'Image', thickness: 0, comment: 'Image' };
+        const subsystem = [objectRow, ...picked, imageRow];
+
+        const { source: sourceRows } = this.getConfigTablesByConfigId(operand?.configId);
+        const wavelength = this.getSystemWavelengthFromOperandOrPrimary(operand, sourceRows);
+
+        const trace = calculateFullSystemParaxialTrace(subsystem, wavelength);
+        const alpha = Number(trace?.finalAlpha);
+        if (!Number.isFinite(alpha) || Math.abs(alpha) <= 1e-12) return 0;
+        return 1.0 / alpha;
+    }
+
+    calculateLongitudinalAberrationRmsUm(operand, opticalSystemData) {
+        try {
+            if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return 1e9;
+
+            const { source: sourceRows } = this.getConfigTablesByConfigId(operand?.configId);
+            const wavelength = this.getSystemWavelengthFromOperandOrPrimary({ param1: operand?.param1 }, sourceRows);
+            if (!Number.isFinite(wavelength) || wavelength <= 0) return 1e9;
+
+            let imageSurfaceIndex = -1;
+            for (let i = 0; i < opticalSystemData.length; i++) {
+                const t = opticalSystemData[i]?.surfType;
+                if (t && String(t).toLowerCase() === 'image') {
+                    imageSurfaceIndex = i;
+                    break;
+                }
+            }
+            if (imageSurfaceIndex < 0) imageSurfaceIndex = opticalSystemData.length - 1;
+            if (imageSurfaceIndex < 0) return 1e9;
+
+            const rayCount = 51;
+
+            const aberr = calculateLongitudinalAberration(
+                opticalSystemData,
+                imageSurfaceIndex,
+                [wavelength],
+                rayCount,
+                { silent: true }
+            );
+
+            const points = aberr?.meridionalData?.[0]?.points;
+            if (!Array.isArray(points) || points.length < 2) return 1e9;
+
+            const pts = points
+                .map(p => ({
+                    r: Number(p?.pupilCoordinate),
+                    L: Number(p?.longitudinalAberration)
+                }))
+                .filter(p => Number.isFinite(p.r) && Number.isFinite(p.L))
+                .sort((a, b) => a.r - b.r);
+
+            if (pts.length < 2) return 1e9;
+
+            // Area-weighted mean and RMS about mean over pupil: weight is 2r dr.
+            const r0 = pts[0].r;
+            const rN = pts[pts.length - 1].r;
+            const denom = (rN * rN) - (r0 * r0);
+            if (!(denom > 0)) return 1e9;
+
+            let sumL = 0;
+            let sumL2 = 0;
+            for (let i = 0; i < pts.length - 1; i++) {
+                const a = pts[i];
+                const b = pts[i + 1];
+                const w = (b.r * b.r) - (a.r * a.r);
+                if (!(w > 0)) continue;
+                const avgL = 0.5 * (a.L + b.L);
+                const avgL2 = 0.5 * ((a.L * a.L) + (b.L * b.L));
+                sumL += avgL * w;
+                sumL2 += avgL2 * w;
+            }
+
+            const meanL = sumL / denom;
+            const meanL2 = sumL2 / denom;
+            const variance = meanL2 - (meanL * meanL);
+            const rmsMm = Math.sqrt(Math.max(0, variance));
+            const rmsUm = rmsMm * 1000;
+
+            return Number.isFinite(rmsUm) ? rmsUm : 1e9;
+        } catch (_) {
+            return 1e9;
+        }
+    }
+
+    calculateSpotSizeUm(operand, opticalSystemData, options = null) {
+        const stampSpotDebug = (patch) => {
+            try {
+                if (typeof window === 'undefined') return;
+                const prev = (window.__cooptLastSpotSizeDebug && typeof window.__cooptLastSpotSizeDebug === 'object')
+                    ? window.__cooptLastSpotSizeDebug
+                    : {};
+                const next = { ...prev, ...patch };
+                window.__cooptLastSpotSizeDebug = next;
+
+                // Keep per-operand snapshots so we can inspect the failing requirement later
+                // even if another evaluation overwrites the global debug object.
+                try {
+                    const key = `operand:${String(next.operand ?? '')}|cfg:${String(next.configId ?? '')}`
+                        + `|p1:${String(next.param1 ?? '')}|p2:${String(next.param2 ?? '')}`
+                        + `|p3:${String(next.param3 ?? '')}|p4:${String(next.param4 ?? '')}`;
+                    const byKey = (window.__cooptSpotSizeDebugByKey && typeof window.__cooptSpotSizeDebugByKey === 'object')
+                        ? window.__cooptSpotSizeDebugByKey
+                        : {};
+                    byKey[key] = next;
+                    window.__cooptSpotSizeDebugByKey = byKey;
+
+                    if (next && next.fastModeEnabled === true) {
+                        const fastByKey = (window.__cooptSpotSizeDebugFastByKey && typeof window.__cooptSpotSizeDebugFastByKey === 'object')
+                            ? window.__cooptSpotSizeDebugFastByKey
+                            : {};
+                        fastByKey[key] = next;
+                        window.__cooptSpotSizeDebugFastByKey = fastByKey;
+                    }
+                } catch (_) {}
+
+                // Keep a separate snapshot for fast-mode (optimizer) evaluations so it isn't
+                // overwritten by later UI-triggered spot evaluations.
+                if (next && next.fastModeEnabled === true) {
+                    window.__cooptLastSpotSizeDebugFast = next;
+                }
+            } catch (_) {}
+        };
+
+        try {
+            const spotEvalStartAt = Date.now();
+            const getLastRayTraceFailureForThisEval = () => {
+                try {
+                    const g = (typeof globalThis !== 'undefined') ? globalThis : null;
+                    const f = g ? (g.__cooptLastRayTraceFailure ?? null) : null;
+                    if (!f || typeof f !== 'object') return null;
+                    const at = Number(f.at);
+                    if (!Number.isFinite(at)) return null;
+                    // Accept only failures that happened at/after this spot evaluation started.
+                    // (This avoids showing stale failures from previous traces.)
+                    return at >= spotEvalStartAt ? f : null;
+                } catch {
+                    return null;
+                }
+            };
+
+            stampSpotDebug({
+                ok: false,
+                reason: 'started',
+                at: spotEvalStartAt,
+                operand: operand?.operand ?? null,
+                configId: (operand && operand.configId !== undefined && operand.configId !== null) ? String(operand.configId) : '',
+                param1: operand?.param1 ?? null,
+                param2: operand?.param2 ?? null,
+                param3: operand?.param3 ?? null,
+                param4: operand?.param4 ?? null,
+                impl: null,
+                pattern: options && typeof options === 'object' ? (options.pattern ?? null) : null,
+                useUiDefaults: null,
+                useUiTables: null,
+                targetSurfaceIndex: null,
+                rayCountRequested: null,
+                rayStartsGenerated: null,
+                hits: null,
+                legacyFallbackHits: null,
+                wavelength: null,
+                fastModeEnabled: null,
+                apertureLimitMm: null,
+                retryRayCount: null,
+                retryApertureLimitMm: null,
+                retryRayStartsGenerated: null,
+                retryHits: null,
+                earlyAbortReason: null,
+                earlyAbortAttempted: null,
+                earlyAbortHits: null,
+                earlyAbortHitRate: null,
+                failPenaltyUm: null,
+                failPenaltyKind: null,
+                failPenaltyRatio: null,
+                lastRayTraceFailure: null
+            });
+
+            if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) {
+                stampSpotDebug({ reason: 'no-optical-system' });
+                return 1e9;
+            }
+
+            const pattern = options && typeof options === 'object' ? String(options.pattern ?? '').trim().toLowerCase() : '';
+            const useUiDefaults = !!(options && typeof options === 'object' && options.useUiDefaults);
+            const useUiTables = (options && typeof options === 'object' && options.useUiTables !== undefined)
+                ? !!options.useUiTables
+                : useUiDefaults;
+            const annularRingCountOverride = (options && typeof options === 'object' && options.annularRingCount !== undefined)
+                ? Number(options.annularRingCount)
+                : null;
+            const rayCountOverride = (options && typeof options === 'object' && options.rayCountOverride !== undefined)
+                ? Number(options.rayCountOverride)
+                : null;
+
+            stampSpotDebug({ pattern, useUiDefaults, useUiTables });
+
+            const isOperandActiveConfig = (() => {
+                try {
+                    const opCfg = (operand && operand.configId !== undefined && operand.configId !== null)
+                        ? String(operand.configId).trim()
+                        : '';
+                    if (!opCfg) return true;
+                    if (typeof localStorage === 'undefined') return false;
+                    const raw = localStorage.getItem('systemConfigurations');
+                    if (!raw) return false;
+                    const sys = JSON.parse(raw);
+                    const activeId = (sys && sys.activeConfigId !== undefined && sys.activeConfigId !== null)
+                        ? String(sys.activeConfigId)
+                        : '';
+                    return !!activeId && opCfg === activeId;
+                } catch {
+                    return false;
+                }
+            })();
+
+            const lastSpotSettings = (() => {
+                if (!useUiDefaults) return null;
+                try {
+                    if (typeof localStorage === 'undefined') return null;
+                    const raw = localStorage.getItem('lastSpotDiagramSettings');
+                    if (!raw) return null;
+                    const parsed = JSON.parse(raw);
+                    const settingsCfg = (parsed && parsed.configId !== undefined && parsed.configId !== null)
+                        ? String(parsed.configId).trim()
+                        : '';
+                    const operandCfg = (operand && operand.configId !== undefined && operand.configId !== null)
+                        ? String(operand.configId).trim()
+                        : '';
+
+                    if (!operandCfg) {
+                        let activeId = '';
+                        try {
+                            const sysRaw = localStorage.getItem('systemConfigurations');
+                            if (sysRaw) {
+                                const sys = JSON.parse(sysRaw);
+                                activeId = (sys && sys.activeConfigId !== undefined && sys.activeConfigId !== null)
+                                    ? String(sys.activeConfigId).trim()
+                                    : '';
+                            }
+                        } catch (_) {}
+
+                        const ok = (!settingsCfg) || (activeId && settingsCfg === activeId);
+                        return ok ? parsed : null;
+                    }
+
+                    return (settingsCfg && settingsCfg === operandCfg) ? parsed : null;
+                } catch (_) {
+                    return null;
+                }
+            })();
+
+            const { source: sourceRows, object: objectRows } = this.getConfigTablesByConfigId(operand?.configId);
+
+            const getUiTableRowsForSpot = () => {
+                try {
+                    if (!useUiTables) return { optical: null, object: null, source: null };
+                    const tableOpt = getTableOpticalSystem?.();
+                    const tableObj = getTableObject?.();
+                    const tableSrc = getTableSource?.();
+
+                    const optRows = getOpticalSystemRows?.(tableOpt);
+                    const objRows = getObjectRows?.(tableObj);
+                    const srcRows = getSourceRows?.(tableSrc);
+
+                    return {
+                        optical: Array.isArray(optRows) && optRows.length > 0 ? optRows : null,
+                        object: Array.isArray(objRows) && objRows.length > 0 ? objRows : null,
+                        source: Array.isArray(srcRows) && srcRows.length > 0 ? srcRows : null
+                    };
+                } catch (_) {
+                    return { optical: null, object: null, source: null };
+                }
+            };
+
+            // Spot Diagram always uses the primary wavelength. To match it, SPOT_SIZE_CURRENT uses primary as well.
+            // (Other spot operands can still use param1-based wavelength selection.)
+            const forceSpotDiagramPrimary = useUiDefaults && (pattern === 'current' || pattern === '');
+            const wlFromSettings = Number(lastSpotSettings?.primaryWavelengthUm);
+            const wavelength = forceSpotDiagramPrimary
+                ? (Number.isFinite(wlFromSettings) && wlFromSettings > 0 ? wlFromSettings : this.getPrimaryWavelengthFromSourceRows(sourceRows))
+                : this.getSystemWavelengthFromOperandOrPrimary({ param1: operand?.param1 }, sourceRows);
+
+            stampSpotDebug({ wavelength });
+
+            const fieldIdx1 = Number.isFinite(Number(operand?.param2)) ? Math.floor(Number(operand.param2)) : 1;
+            const objCount = Array.isArray(objectRows) ? objectRows.length : 0;
+            const fieldIndex0 = (objCount > 0)
+                ? Math.max(0, Math.min(objCount - 1, fieldIdx1 - 1))
+                : 0;
+            const obj = (objCount > 0) ? objectRows[fieldIndex0] : null;
+            if (!obj) {
+                stampSpotDebug({ reason: 'no-object-row', objectRowsLength: objCount, fieldIndex0 });
+                return 1e9;
+            }
+
+            const metricRaw = (operand?.param3 === undefined || operand?.param3 === null) ? '' : String(operand.param3);
+            const metricNorm0 = metricRaw.trim().toLowerCase();
+            const metricNorm = metricNorm0.replace(/[^a-z0-9]/g, '');
+            const metric = (!metricNorm0 || metricNorm === '')
+                ? 'rms'
+                : (
+                    metricNorm === 'rms' ||
+                    metricNorm === 'rmstotal' ||
+                    metricNorm === 'rmsxy' ||
+                    metricNorm === 'r'
+                )
+                    ? 'rms'
+                    : (
+                        metricNorm === 'diameter' ||
+                        metricNorm === 'dia' ||
+                        metricNorm === 'diam' ||
+                        metricNorm === 'd'
+                    )
+                        ? 'diameter'
+                        : metricNorm0;
+
+            const raysRaw = Number(operand?.param4);
+            const rayCountFromOperand = Number.isFinite(raysRaw) ? Math.max(1, Math.min(5000, Math.floor(raysRaw))) : null;
+            const rayCountFromUi = (() => {
+                if (!useUiDefaults) return null;
+                try {
+                    if (typeof document === 'undefined') return null;
+                    const fromSettings = Number(lastSpotSettings?.rayCount);
+                    if (Number.isFinite(fromSettings) && fromSettings > 0) {
+                        return Math.max(1, Math.min(5000, Math.floor(fromSettings)));
+                    }
+                    const el = document.getElementById('ray-count-input');
+                    if (!el || el.value === undefined || el.value === null) return null;
+                    const parsed = parseInt(String(el.value), 10);
+                    return Number.isInteger(parsed) && parsed > 0 ? Math.max(1, Math.min(5000, parsed)) : null;
+                } catch (_) {
+                    return null;
+                }
+            })();
+            // IMPORTANT: If the operand explicitly specifies ray count (param4), honor it.
+            // Optimizer fast-mode may provide a rayCountOverride for speed, but it must NOT
+            // silently change the meaning of a saved Requirement.
+            const rayCount = (rayCountFromOperand !== null)
+                ? rayCountFromOperand
+                : ((Number.isFinite(rayCountOverride) && rayCountOverride > 0)
+                    ? Math.max(1, Math.min(5000, Math.floor(rayCountOverride)))
+                    : (rayCountFromUi !== null ? rayCountFromUi : 501));
+
+            const fastModeEnabled = !!(typeof globalThis !== 'undefined' && globalThis.__cooptMeritFastMode && globalThis.__cooptMeritFastMode.enabled);
+            stampSpotDebug({ fastModeEnabled, rayCountRequested: rayCount });
+
+            const isImageRow = (row) => {
+                if (!row || typeof row !== 'object') return false;
+                const t1 = String(row['object type'] ?? '').trim();
+                const t2 = String(row.object ?? '').trim();
+                const st = String(row.surfType ?? '').trim().toLowerCase();
+                if (t1 === 'Image' || t2 === 'Image') return true;
+                return st === 'image' || st.includes('image');
+            };
+
+            const isObjectRow = (row) => {
+                if (!row || typeof row !== 'object') return false;
+                const t1 = String(row['object type'] ?? '').trim();
+                const t2 = String(row.object ?? '').trim();
+                const st = String(row.surfType ?? '').trim().toLowerCase();
+                if (t1 === 'Object' || t2 === 'Object') return true;
+                return st === 'object';
+            };
+
+            const isCoordinateBreakRow = (row) => {
+                if (!row || typeof row !== 'object') return false;
+                const st = String(row.surfType ?? '').trim().toLowerCase();
+                return st === 'cb' || st === 'coordinate break' || st === 'coord break';
+            };
+
+            let imageSurfaceIndex = -1;
+            for (let i = 0; i < opticalSystemData.length; i++) {
+                if (isImageRow(opticalSystemData[i])) {
+                    imageSurfaceIndex = i;
+                    break;
+                }
+            }
+            if (imageSurfaceIndex < 0) imageSurfaceIndex = opticalSystemData.length - 1;
+            if (imageSurfaceIndex < 0) return 1e9;
+
+            const uiSurfaceIndex = (() => {
+                if (!useUiDefaults) return null;
+                try {
+                    if (typeof document === 'undefined') return null;
+                    const fromSettings = Number(lastSpotSettings?.surfaceIndex);
+                    if (Number.isInteger(fromSettings) && fromSettings >= 0 && fromSettings < opticalSystemData.length) {
+                        if (!isObjectRow(opticalSystemData[fromSettings]) && !isCoordinateBreakRow(opticalSystemData[fromSettings])) {
+                            return fromSettings;
+                        }
+                    }
+                    // Only the active config's UI has a meaningful surface-number-select.
+                    if (!isOperandActiveConfig) return null;
+                    const el = document.getElementById('surface-number-select');
+                    if (!el || el.value === undefined || el.value === null) return null;
+                    // Note: this select uses 0-indexed surface indices as option values.
+                    const idx = parseInt(String(el.value), 10);
+                    if (!Number.isInteger(idx) || idx < 0 || idx >= opticalSystemData.length) return null;
+
+                    if (isObjectRow(opticalSystemData[idx])) return null;
+                    if (isCoordinateBreakRow(opticalSystemData[idx])) return null;
+
+                    return idx;
+                } catch (_) {
+                    return null;
+                }
+            })();
+
+            const targetSurfaceIndex = (uiSurfaceIndex !== null) ? uiSurfaceIndex : imageSurfaceIndex;
+            const surfaceInfos = calculateSurfaceOrigins(opticalSystemData);
+            const surfaceInfo = surfaceInfos?.[targetSurfaceIndex] || null;
+
+            stampSpotDebug({ targetSurfaceIndex });
+
+            const desiredPattern = (pattern === 'annular' || pattern === 'grid') ? pattern : '';
+            const prevPattern = desiredPattern ? getRayEmissionPattern() : null;
+            if (desiredPattern) {
+                try { setRayEmissionPattern(desiredPattern); } catch (_) {}
+            }
+
+            const annularRingCountFromUi = (() => {
+                if (!useUiDefaults) return null;
+                try {
+                    if (typeof document === 'undefined') return null;
+                    const fromSettings = Number(lastSpotSettings?.ringCount);
+                    if (Number.isFinite(fromSettings) && fromSettings > 0) {
+                        return Math.floor(fromSettings);
+                    }
+                    const el = document.getElementById('ring-count-select');
+                    if (!el || el.value === undefined || el.value === null) return null;
+                    const parsed = parseInt(String(el.value), 10);
+                    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+                } catch (_) {
+                    return null;
+                }
+            })();
+
+            // If we are not forcing the pattern, honor the current Spot Diagram UI/global pattern.
+            // Prefer live UI state for the active config; fall back to global getter; lastly stored settings.
+            // Ring count only matters for annular patterns.
+            const currentPattern = (() => {
+                try {
+                    if (useUiDefaults && isOperandActiveConfig && typeof document !== 'undefined') {
+                        const gridBtn = document.getElementById('grid-pattern-btn');
+                        const annBtn = document.getElementById('annular-pattern-btn');
+                        if (gridBtn && gridBtn.classList && gridBtn.classList.contains('active')) return 'grid';
+                        if (annBtn && annBtn.classList && annBtn.classList.contains('active')) return 'annular';
+                    }
+                } catch (_) {}
+                try {
+                    const gp = String(getRayEmissionPattern() || '').trim().toLowerCase();
+                    if (gp) return gp;
+                } catch (_) {}
+                const fromSettings = lastSpotSettings?.pattern;
+                if (typeof fromSettings === 'string' && fromSettings.trim() !== '') {
+                    return fromSettings.trim().toLowerCase();
+                }
+                return '';
+            })();
+            const effectiveAnnularRingCount = (() => {
+                const base = Number.isFinite(annularRingCountOverride) ? annularRingCountOverride : (annularRingCountFromUi !== null ? annularRingCountFromUi : null);
+                if (base !== null) return base;
+                // Keep legacy default (3) when unspecified.
+                return 3;
+            })();
+
+            // Spot size operands are intended to match the Spot Diagram UI exactly.
+            // Use the same implementation path (eva-spot-diagram.generateSpotDiagram) for their spot point generation.
+            // This avoids subtle mismatches (ray start generation, filtering, chief-ray flagging, etc.).
+            if (useUiDefaults && (pattern === 'current' || pattern === '' || pattern === 'annular' || pattern === 'grid')) {
+                stampSpotDebug({ impl: 'spot-diagram' });
+                stampSpotDebug({
+                    fastModeEnabled,
+                    rayCountRequested: rayCount,
+                    lastRayTraceFailure: getLastRayTraceFailureForThisEval()
+                });
+
+                // Prefer UI table rows only when the operand targets the active configuration.
+                // For non-active configs, keep using the config snapshot tables but still use Spot Diagram settings.
+                const uiRows = getUiTableRowsForSpot();
+                const spotOpticalRows = (useUiTables && uiRows.optical) ? uiRows.optical : opticalSystemData;
+                const spotObjectRows = (useUiTables && uiRows.object) ? uiRows.object : objectRows;
+                const spotSourceRows = (useUiTables && uiRows.source) ? uiRows.source : sourceRows;
+
+                // Respect operand wavelength selection (param1 = λ idx, 1-based, blank=Primary).
+                // Spot Diagram UI itself traces the Primary wavelength, so we emulate "select wavelength"
+                // by marking the selected source row as Primary (and optionally narrowing to that row).
+                const spotSourceRowsForOperand = (() => {
+                    try {
+                        if (!Array.isArray(spotSourceRows) || spotSourceRows.length === 0) return [];
+                        if (forceSpotDiagramPrimary) return spotSourceRows;
+
+                        const raw = (operand && operand.param1 !== undefined && operand.param1 !== null)
+                            ? String(operand.param1).trim()
+                            : '';
+                        const idx1 = raw === '' ? 0 : Number(raw);
+                        if (!(Number.isFinite(idx1) && idx1 > 0)) return spotSourceRows;
+                        const i0 = Math.max(0, Math.min(spotSourceRows.length - 1, Math.floor(idx1) - 1));
+
+                        // Prefer a single-wavelength list so the generator's "primary" is unambiguous.
+                        const chosen = spotSourceRows[i0];
+                        const wl = Number(chosen?.wavelength);
+                        if (!(Number.isFinite(wl) && wl > 0)) return spotSourceRows;
+
+                        const row = { ...(chosen && typeof chosen === 'object' ? chosen : {}) };
+                        row.wavelength = wl;
+                        row.primary = 'Primary Wavelength';
+                        return [row];
+                    } catch (_) {
+                        return spotSourceRows;
+                    }
+                })();
+
+                const objCount2 = Array.isArray(spotObjectRows) ? spotObjectRows.length : 0;
+                const fieldIndex0ForSpot = (objCount2 > 0)
+                    ? Math.max(0, Math.min(objCount2 - 1, fieldIdx1 - 1))
+                    : 0;
+                const obj2 = (objCount2 > 0)
+                    ? spotObjectRows[fieldIndex0ForSpot]
+                    : null;
+                if (!obj2) return 1e9;
+
+                // Recompute target surface index against the rows we're actually using.
+                let imgIdx2 = -1;
+                for (let i = 0; i < spotOpticalRows.length; i++) {
+                    if (isImageRow(spotOpticalRows[i])) { imgIdx2 = i; break; }
+                }
+                if (imgIdx2 < 0) imgIdx2 = spotOpticalRows.length - 1;
+                if (imgIdx2 < 0) return 1e9;
+
+                const uiSurfaceIdx2 = (() => {
+                    const fromSettings = Number(lastSpotSettings?.surfaceIndex);
+                    if (Number.isInteger(fromSettings) && fromSettings >= 0 && fromSettings < spotOpticalRows.length) {
+                        if (!isObjectRow(spotOpticalRows[fromSettings]) && !isCoordinateBreakRow(spotOpticalRows[fromSettings])) {
+                            return fromSettings;
+                        }
+                    }
+                    // For the active configuration, honor the current UI surface selection.
+                    // (This keeps Spot Size operands consistent with the Spot Diagram when the user
+                    // changes the surface without re-opening or re-rendering the Spot Diagram.)
+                    try {
+                        if (!isOperandActiveConfig) return null;
+                        if (typeof document === 'undefined') return null;
+                        const el = document.getElementById('surface-number-select');
+                        if (!el || el.value === undefined || el.value === null) return null;
+                        const idx = parseInt(String(el.value), 10);
+                        if (!Number.isInteger(idx) || idx < 0 || idx >= spotOpticalRows.length) return null;
+                        if (isObjectRow(spotOpticalRows[idx])) return null;
+                        if (isCoordinateBreakRow(spotOpticalRows[idx])) return null;
+                        return idx;
+                    } catch (_) {
+                        return null;
+                    }
+                    return null;
+                })();
+
+                const targetSurfaceIdx2 = (uiSurfaceIdx2 !== null) ? uiSurfaceIdx2 : imgIdx2;
+                const surfaceNumber1 = targetSurfaceIdx2 + 1;
+                const prevPattern0 = (() => {
+                    try { return String(getRayEmissionPattern() || '').trim().toLowerCase(); } catch (_) { return ''; }
+                })();
+
+                // Best-effort: mirror the Spot Diagram's active pattern before generating.
+                // (Spot Diagram uses window.getRayEmissionPattern / window.rayEmissionPattern.)
+                try {
+                    const forced = (pattern === 'annular' || pattern === 'grid')
+                        ? pattern
+                        : ((currentPattern === 'grid' || currentPattern === 'annular') ? currentPattern : 'annular');
+                    if (forced) setRayEmissionPattern(forced);
+                } catch (_) {}
+
+                let spot;
+                try {
+                    spot = generateSpotDiagram(
+                        spotOpticalRows,
+                        Array.isArray(spotSourceRowsForOperand) ? spotSourceRowsForOperand : [],
+                        [obj2],
+                        surfaceNumber1,
+                        rayCount,
+                        // Ring count is used for annular sampling.
+                        // (For grid sampling it is ignored by the generator.)
+                        effectiveAnnularRingCount
+                    );
+                } finally {
+                    // Restore previous pattern if it was set.
+                    try {
+                        if (prevPattern0) setRayEmissionPattern(prevPattern0);
+                    } catch (_) {}
+                }
+
+                const spotDataArr = (spot && typeof spot === 'object' && Array.isArray(spot.spotData)) ? spot.spotData : null;
+                const spotPoints = (spotDataArr && spotDataArr[0] && Array.isArray(spotDataArr[0].spotPoints)) ? spotDataArr[0].spotPoints : null;
+                if (!spotPoints || spotPoints.length === 0) {
+                    stampSpotDebug({ ok: false, reason: 'no-spot-points', hits: 0 });
+                    return 1e9;
+                }
+
+                let chiefPt = spotPoints.find(p => p && p.isChiefRay) || null;
+                if (!chiefPt) {
+                    // Spot Diagram fallback behavior: centroid-closest.
+                    const cx = spotPoints.reduce((sum, p) => sum + Number(p?.x || 0), 0) / spotPoints.length;
+                    const cy = spotPoints.reduce((sum, p) => sum + Number(p?.y || 0), 0) / spotPoints.length;
+                    let bestIdx = 0;
+                    let bestDist = Infinity;
+                    for (let i = 0; i < spotPoints.length; i++) {
+                        const p = spotPoints[i];
+                        const x = Number(p?.x);
+                        const y = Number(p?.y);
+                        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                        const d = Math.hypot(x - cx, y - cy);
+                        if (d < bestDist) {
+                            bestDist = d;
+                            bestIdx = i;
+                        }
+                    }
+                    chiefPt = spotPoints[bestIdx] || spotPoints[0];
+                }
+
+                const chiefX = Number(chiefPt?.x);
+                const chiefY = Number(chiefPt?.y);
+                if (!Number.isFinite(chiefX) || !Number.isFinite(chiefY)) {
+                    stampSpotDebug({ ok: false, reason: 'invalid-chief-point', hits: spotPoints.length });
+                    return 1e9;
+                }
+
+                let maxRUm = 0;
+                let sumX2 = 0;
+                let sumY2 = 0;
+                let n = 0;
+                for (const p of spotPoints) {
+                    const x = Number(p?.x);
+                    const y = Number(p?.y);
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                    const dxUm = (x - chiefX) * 1000;
+                    const dyUm = (y - chiefY) * 1000;
+                    const rUm = Math.hypot(dxUm, dyUm);
+                    if (rUm > maxRUm) maxRUm = rUm;
+                    sumX2 += dxUm * dxUm;
+                    sumY2 += dyUm * dyUm;
+                    n++;
+                }
+
+                if (n <= 0) {
+                    stampSpotDebug({ ok: false, reason: 'no-finite-spot-points', hits: 0 });
+                    return 1e9;
+                }
+                const rmsX = Math.sqrt(sumX2 / n);
+                const rmsY = Math.sqrt(sumY2 / n);
+                const rmsTotal = Math.sqrt(rmsX * rmsX + rmsY * rmsY);
+                const diameter = 2 * maxRUm;
+
+                stampSpotDebug({ ok: true, reason: 'ok', hits: n, lastRayTraceFailure: getLastRayTraceFailureForThisEval() });
+
+                if (metric === 'diameter') return diameter;
+                return rmsTotal;
+            }
+
+            stampSpotDebug({ impl: 'ray-trace' });
+
+            let rayStarts;
+            let apertureLimitMm = null;
+            try {
+                // Fast merit evaluation should avoid sampling near the physical aperture limit,
+                // otherwise many rays can vignette and Spot ends up with 0 hits (→ 1e9).
+                // Mirror Spot Diagram's conservative heuristic: effectiveRadius = 0.5 * min semidia.
+                apertureLimitMm = (() => {
+                    try {
+                        if (!fastModeEnabled) return null;
+                        if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return null;
+                        const maxIdx = Math.max(0, Math.min(opticalSystemData.length - 1, targetSurfaceIndex));
+
+                        let minSemidia = Infinity;
+                        for (let si = 0; si <= maxIdx; si++) {
+                            const row = opticalSystemData[si];
+                            if (!row || typeof row !== 'object') continue;
+                            const t1 = String(row['object type'] ?? '').trim();
+                            const t2 = String(row.object ?? '').trim();
+                            if (t1 === 'Object' || t2 === 'Object') continue;
+                            const st = String(row.surfType ?? '').trim().toLowerCase();
+                            if (st === 'cb' || st === 'coordinate break' || st === 'coord break') continue;
+
+                            const sd = Number(row.semidia);
+                            if (Number.isFinite(sd) && sd > 0 && sd < minSemidia) {
+                                minSemidia = sd;
+                            }
+                        }
+                        if (!Number.isFinite(minSemidia) || minSemidia <= 0) return null;
+                        // Add a small safety margin to avoid borderline vignetting from numerical jitter.
+                        return 0.5 * minSemidia * 0.99;
+                    } catch {
+                        return null;
+                    }
+                })();
+
+                stampSpotDebug({ apertureLimitMm });
+
+                rayStarts = generateRayStartPointsForObject(
+                    obj,
+                    opticalSystemData,
+                    rayCount,
+                    apertureLimitMm,
+                    // NOTE: ray-renderer expects 0-based surface indices for targetSurfaceIndex.
+                    {
+                        annularRingCount: (desiredPattern === 'annular' || (!desiredPattern && currentPattern === 'annular'))
+                            ? effectiveAnnularRingCount
+                            : effectiveAnnularRingCount,
+                        targetSurfaceIndex,
+                        useChiefRayAnalysis: true,
+                        chiefRaySolveMode: fastModeEnabled ? 'fast' : 'legacy',
+                        wavelengthUm: wavelength
+                    }
+                );
+            } finally {
+                if (desiredPattern && prevPattern) {
+                    try { setRayEmissionPattern(prevPattern); } catch (_) {}
+                }
+            }
+
+            if (!Array.isArray(rayStarts) || rayStarts.length === 0) {
+                stampSpotDebug({ reason: 'no-ray-starts', rayStartsGenerated: Array.isArray(rayStarts) ? rayStarts.length : 0 });
+                return 1e9;
+            }
+
+            if (fastModeEnabled) {
+                try { globalThis.__cooptLastRayTraceFailure = undefined; } catch (_) {}
+            }
+
+            try {
+                if (typeof window !== 'undefined') {
+                    // Merge (do not overwrite) so earlier stamps like apertureLimitMm survive.
+                    stampSpotDebug({
+                        ok: true,
+                        reason: 'ok',
+                        targetSurfaceIndex,
+                        rayCountRequested: rayCount,
+                        rayStartsGenerated: Array.isArray(rayStarts) ? rayStarts.length : 0,
+                        legacyFallbackHits: 0,
+                        wavelength,
+                        fastModeEnabled,
+                        lastRayTraceFailure: null
+                    });
+                }
+            } catch (_) {}
+
+            /** @type {{x:number,y:number,isChief:boolean}[]} */
+            const collectHits = (starts, maxRays) => {
+                /** @type {{x:number,y:number,isChief:boolean}[]} */
+                const out = [];
+                let legacyHits = 0;
+                let attempted = 0;
+                let earlyAbort = null;
+
+                const fastCfg = (() => {
+                    try {
+                        if (!fastModeEnabled) return null;
+                        const m = (typeof globalThis !== 'undefined') ? globalThis.__cooptMeritFastMode : null;
+                        return (m && typeof m === 'object') ? m : null;
+                    } catch (_) {
+                        return null;
+                    }
+                })();
+
+                const earlyAbortEnabled = fastModeEnabled && (fastCfg ? (fastCfg.spotEarlyAbortEnabled !== false) : true);
+                const earlyAbortMinAttempt = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortMinAttempt);
+                    if (Number.isFinite(v) && v > 0) return Math.max(5, Math.floor(v));
+                    return 20;
+                })();
+                const earlyAbortMinHitRate = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortMinHitRate);
+                    if (Number.isFinite(v) && v > 0 && v < 1) return v;
+                    return 0.20;
+                })();
+                const earlyAbortMaxHits = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortMaxHits);
+                    if (Number.isFinite(v) && v >= 0) return Math.floor(v);
+                    return 8;
+                })();
+
+                const earlyAbortMaxAttempt = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortMaxAttempt);
+                    if (Number.isFinite(v) && v > 0) return Math.max(earlyAbortMinAttempt, Math.floor(v));
+                    return 30;
+                })();
+
+                const missStreakMin = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortMissStreakMin);
+                    if (Number.isFinite(v) && v > 0) return Math.max(5, Math.floor(v));
+                    return 15;
+                })();
+
+                const blockStreakMin = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortBlockStreakMin);
+                    if (Number.isFinite(v) && v > 0) return Math.max(3, Math.floor(v));
+                    return 10;
+                })();
+
+                const streakMaxHits = (() => {
+                    const v = Number(fastCfg?.spotEarlyAbortStreakMaxHits);
+                    if (Number.isFinite(v) && v >= 0) return Math.floor(v);
+                    return 12;
+                })();
+
+                const computeFailPenaltyForFastAbort = () => {
+                    try {
+                        const f = getLastRayTraceFailureForThisEval();
+                        if (f && typeof f === 'object' && String(f.kind || '') === 'PHYSICAL_APERTURE_BLOCK') {
+                            const hitR = Number((f.hitRadiusMm ?? f.details?.hitRadiusMm));
+                            const limR = Number((f.apertureLimitMm ?? f.details?.apertureLimitMm));
+                            if (Number.isFinite(hitR) && Number.isFinite(limR) && limR > 0) {
+                                const ratio = Math.max(1, hitR / limR);
+                                const um = Math.min(2e5, Math.max(1e4, 1e4 * ratio));
+                                return { um, kind: 'PHYSICAL_APERTURE_BLOCK', ratio };
+                            }
+                        }
+                    } catch (_) {}
+                    return { um: 5e4, kind: 'LOW_HIT_RATE', ratio: null };
+                };
+
+                const limit = Math.max(0, Math.floor(Number.isFinite(maxRays) ? maxRays : 0));
+                let consecutiveMiss = 0;
+                let consecutiveBlock = 0;
+                let blockCount = 0;
+                for (let i = 0; i < starts.length && i < limit; i++) {
+                    const rs = starts[i];
+                    const sp = rs?.startP;
+                    const dir = rs?.dir;
+                    if (!sp || !dir) continue;
+                    const ray0 = { pos: { x: sp.x, y: sp.y, z: sp.z }, dir: { x: dir.x, y: dir.y, z: dir.z }, wavelength };
+                    let hitGlobal = traceRayHitPoint(opticalSystemData, ray0, 1.0, targetSurfaceIndex);
+                    if (!hitGlobal) {
+                        // Robustness fallback: keep legacy behavior if the fast path fails.
+                        // (Some ray-tracing paths may terminate early or have unusual surface indexing assumptions.)
+                        const path = traceRay(opticalSystemData, ray0, 1.0, null, targetSurfaceIndex);
+                        hitGlobal = path?.[targetSurfaceIndex] || null;
+                        if (hitGlobal) legacyHits++;
+                    }
+
+                    attempted++;
+
+                    if (!hitGlobal) {
+                        consecutiveMiss++;
+                        if (earlyAbortEnabled) {
+                            try {
+                                const f = getLastRayTraceFailureForThisEval();
+                                if (f && typeof f === 'object' && String(f.kind || '') === 'PHYSICAL_APERTURE_BLOCK') {
+                                    blockCount++;
+                                    consecutiveBlock++;
+                                } else {
+                                    consecutiveBlock = 0;
+                                }
+                            } catch (_) {}
+
+                            // Streak-based abort triggers (faster than hit-rate-only when early samples look OK).
+                            if (attempted >= earlyAbortMinAttempt) {
+                                const hitsNow0 = out.length;
+                                if (consecutiveMiss >= missStreakMin && hitsNow0 <= streakMaxHits) {
+                                    const fp = computeFailPenaltyForFastAbort();
+                                    earlyAbort = {
+                                        reason: 'miss-streak',
+                                        attempted,
+                                        hits: hitsNow0,
+                                        hitRate: attempted > 0 ? (hitsNow0 / attempted) : 0,
+                                        consecutiveMiss,
+                                        consecutiveBlock,
+                                        blockCount,
+                                        thresholdMinAttempt: earlyAbortMinAttempt,
+                                        thresholdMinHitRate: earlyAbortMinHitRate,
+                                        thresholdMaxHits: earlyAbortMaxHits,
+                                        thresholdMaxAttempt: earlyAbortMaxAttempt,
+                                        thresholdMissStreakMin: missStreakMin,
+                                        thresholdBlockStreakMin: blockStreakMin,
+                                        thresholdStreakMaxHits: streakMaxHits,
+                                        failPenaltyUm: fp.um,
+                                        failPenaltyKind: fp.kind,
+                                        failPenaltyRatio: fp.ratio
+                                    };
+                                    break;
+                                }
+                                if (consecutiveBlock >= blockStreakMin) {
+                                    const fp = computeFailPenaltyForFastAbort();
+                                    earlyAbort = {
+                                        reason: 'aperture-block-streak',
+                                        attempted,
+                                        hits: hitsNow0,
+                                        hitRate: attempted > 0 ? (hitsNow0 / attempted) : 0,
+                                        consecutiveMiss,
+                                        consecutiveBlock,
+                                        blockCount,
+                                        thresholdMinAttempt: earlyAbortMinAttempt,
+                                        thresholdMinHitRate: earlyAbortMinHitRate,
+                                        thresholdMaxHits: earlyAbortMaxHits,
+                                        thresholdMaxAttempt: earlyAbortMaxAttempt,
+                                        thresholdMissStreakMin: missStreakMin,
+                                        thresholdBlockStreakMin: blockStreakMin,
+                                        thresholdStreakMaxHits: streakMaxHits,
+                                        failPenaltyUm: fp.um,
+                                        failPenaltyKind: fp.kind,
+                                        failPenaltyRatio: fp.ratio
+                                    };
+                                    break;
+                                }
+
+                                // Hard cap: if we've traced many rays and still have too few hits, abort.
+                                if (attempted >= earlyAbortMaxAttempt && hitsNow0 <= streakMaxHits) {
+                                    const hitRate0 = attempted > 0 ? (hitsNow0 / attempted) : 0;
+                                    // Only treat this as a failure if the hit rate is actually low.
+                                    // Otherwise this is just a sampling cap (good rays, just few samples).
+                                    const isFailure = hitRate0 < earlyAbortMinHitRate;
+                                    const fp = isFailure ? computeFailPenaltyForFastAbort() : null;
+                                    earlyAbort = {
+                                        reason: isFailure ? 'max-attempt-cap' : 'sample-cap',
+                                        attempted,
+                                        hits: hitsNow0,
+                                        hitRate: hitRate0,
+                                        consecutiveMiss,
+                                        consecutiveBlock,
+                                        blockCount,
+                                        thresholdMinAttempt: earlyAbortMinAttempt,
+                                        thresholdMinHitRate: earlyAbortMinHitRate,
+                                        thresholdMaxHits: earlyAbortMaxHits,
+                                        thresholdMaxAttempt: earlyAbortMaxAttempt,
+                                        thresholdMissStreakMin: missStreakMin,
+                                        thresholdBlockStreakMin: blockStreakMin,
+                                        thresholdStreakMaxHits: streakMaxHits,
+                                        failPenaltyUm: fp ? fp.um : null,
+                                        failPenaltyKind: fp ? fp.kind : null,
+                                        failPenaltyRatio: fp ? fp.ratio : null
+                                    };
+                                    break;
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    // Hit
+                    consecutiveMiss = 0;
+                    consecutiveBlock = 0;
+                    const hitLocal = surfaceInfo ? transformPointToLocal(hitGlobal, surfaceInfo) : hitGlobal;
+                    const x = Number(hitLocal?.x);
+                    const y = Number(hitLocal?.y);
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                    const isChief = rs?.isChief === true || (rs?.isChief === undefined && i === 0);
+                    out.push({ x, y, isChief });
+
+                    // Early-abort when vignetting makes hit rate extremely low.
+                    // This speeds up optimization runs in cases like PHYSICAL_APERTURE_BLOCK dominating.
+                    if (earlyAbortEnabled && attempted >= Math.min(limit, earlyAbortMinAttempt)) {
+                        const hitsNow = out.length;
+                        const hitRate = attempted > 0 ? (hitsNow / attempted) : 0;
+                        // Include hitRate=0 (all rays vignetted) as an early-abort case.
+                        if (hitsNow <= earlyAbortMaxHits && hitRate < earlyAbortMinHitRate) {
+                            const fp = computeFailPenaltyForFastAbort();
+                            earlyAbort = {
+                                reason: 'low-hit-rate',
+                                attempted,
+                                hits: hitsNow,
+                                hitRate,
+                                thresholdMinAttempt: earlyAbortMinAttempt,
+                                thresholdMinHitRate: earlyAbortMinHitRate,
+                                thresholdMaxHits: earlyAbortMaxHits,
+                                thresholdMaxAttempt: earlyAbortMaxAttempt,
+                                thresholdMissStreakMin: missStreakMin,
+                                thresholdBlockStreakMin: blockStreakMin,
+                                thresholdStreakMaxHits: streakMaxHits,
+                                failPenaltyUm: fp.um,
+                                failPenaltyKind: fp.kind,
+                                failPenaltyRatio: fp.ratio
+                            };
+                            break;
+                        }
+
+                        // Same hard cap check after hits too.
+                        if (attempted >= earlyAbortMaxAttempt && hitsNow <= streakMaxHits) {
+                            // Only treat as failure when hit rate is actually low.
+                            const isFailure = hitRate < earlyAbortMinHitRate;
+                            const fp = isFailure ? computeFailPenaltyForFastAbort() : null;
+                            earlyAbort = {
+                                reason: isFailure ? 'max-attempt-cap' : 'sample-cap',
+                                attempted,
+                                hits: hitsNow,
+                                hitRate,
+                                consecutiveMiss,
+                                consecutiveBlock,
+                                blockCount,
+                                thresholdMinAttempt: earlyAbortMinAttempt,
+                                thresholdMinHitRate: earlyAbortMinHitRate,
+                                thresholdMaxHits: earlyAbortMaxHits,
+                                thresholdMaxAttempt: earlyAbortMaxAttempt,
+                                thresholdMissStreakMin: missStreakMin,
+                                thresholdBlockStreakMin: blockStreakMin,
+                                thresholdStreakMaxHits: streakMaxHits,
+                                failPenaltyUm: fp ? fp.um : null,
+                                failPenaltyKind: fp ? fp.kind : null,
+                                failPenaltyRatio: fp ? fp.ratio : null
+                            };
+                            break;
+                        }
+                    }
+                }
+                return { hits: out, legacyFallbackHits: legacyHits, attempted, earlyAbort };
+            };
+
+            let { hits, legacyFallbackHits, attempted, earlyAbort } = collectHits(rayStarts, rayCount);
+
+            // If we hit a sampling cap (not a failure), keep debug fields but do not penalize.
+            if (fastModeEnabled && earlyAbort && (earlyAbort.failPenaltyUm === null || earlyAbort.failPenaltyUm === undefined)) {
+                try {
+                    stampSpotDebug({
+                        earlyAbortAttempted: attempted,
+                        earlyAbortHits: earlyAbort.hits,
+                        earlyAbortHitRate: earlyAbort.hitRate,
+                        earlyAbortReason: earlyAbort.reason,
+                        lastRayTraceFailure: getLastRayTraceFailureForThisEval()
+                    });
+                } catch (_) {}
+            }
+
+            if (fastModeEnabled && earlyAbort && earlyAbort.failPenaltyUm !== undefined && earlyAbort.failPenaltyUm !== null) {
+                // If we failed due to physical aperture blocking with 0 hits, try a deterministic
+                // tighter-aperture retry to recover some rays and keep the objective continuous.
+                // (This is only for fast-mode and only for the worst case where we have no data.)
+                if (hits.length === 0 && String(earlyAbort.failPenaltyKind || '') === 'PHYSICAL_APERTURE_BLOCK') {
+                    const baseLim = (() => {
+                        if (Number.isFinite(Number(apertureLimitMm)) && Number(apertureLimitMm) > 0) return Number(apertureLimitMm);
+                        const f = getLastRayTraceFailureForThisEval();
+                        const lim = Number(f?.apertureLimitMm ?? f?.details?.apertureLimitMm);
+                        return (Number.isFinite(lim) && lim > 0) ? lim : null;
+                    })();
+
+                    const doRetry = (factor) => {
+                        try {
+                            if (!(baseLim && Number.isFinite(baseLim) && baseLim > 0)) return null;
+                            const lim2 = baseLim * factor;
+                            if (!(Number.isFinite(lim2) && lim2 > 0)) return null;
+
+                            const retryRayCount = Math.max(10, Math.min(rayCount, 61));
+                            const prevPattern2 = desiredPattern ? getRayEmissionPattern() : null;
+                            if (desiredPattern) {
+                                try { setRayEmissionPattern(desiredPattern); } catch (_) {}
+                            }
+                            let retryStarts;
+                            try {
+                                retryStarts = generateRayStartPointsForObject(
+                                    obj,
+                                    opticalSystemData,
+                                    retryRayCount,
+                                    lim2,
+                                    {
+                                        annularRingCount: (desiredPattern === 'annular' || (!desiredPattern && currentPattern === 'annular'))
+                                            ? effectiveAnnularRingCount
+                                            : effectiveAnnularRingCount,
+                                        targetSurfaceIndex,
+                                        useChiefRayAnalysis: true,
+                                        chiefRaySolveMode: fastModeEnabled ? 'fast' : 'legacy',
+                                        wavelengthUm: wavelength
+                                    }
+                                );
+                            } finally {
+                                if (desiredPattern && prevPattern2) {
+                                    try { setRayEmissionPattern(prevPattern2); } catch (_) {}
+                                }
+                            }
+                            if (!Array.isArray(retryStarts) || retryStarts.length === 0) return null;
+                            const r2 = collectHits(retryStarts, retryRayCount);
+                            return {
+                                factor,
+                                lim2,
+                                retryRayCount,
+                                retryStartsGenerated: retryStarts.length,
+                                ...r2
+                            };
+                        } catch (_) {
+                            return null;
+                        }
+                    };
+
+                    const attempts = [0.7, 0.5, 0.35]
+                        .map(f => doRetry(f))
+                        .filter(x => x && typeof x === 'object');
+
+                    // Pick best attempt by hit count.
+                    let best = null;
+                    for (const a of attempts) {
+                        const hn = Array.isArray(a.hits) ? a.hits.length : 0;
+                        const bn = best && Array.isArray(best.hits) ? best.hits.length : 0;
+                        if (!best || hn > bn) best = a;
+                    }
+
+                    // Always stamp retry outcome for observability.
+                    try {
+                        stampSpotDebug({
+                            retryTightApertureAttempted: true,
+                            retryTightApertureFactors: attempts.map(a => a.factor),
+                            retryRayCount: best ? best.retryRayCount : null,
+                            retryApertureLimitMm: best ? best.lim2 : null,
+                            retryRayStartsGenerated: best ? best.retryStartsGenerated : null,
+                            retryHits: best && Array.isArray(best.hits) ? best.hits.length : 0,
+                            retryEarlyAbortReason: best && best.earlyAbort ? best.earlyAbort.reason : null,
+                            retryEarlyAbortHitRate: best && best.earlyAbort ? best.earlyAbort.hitRate : null,
+                            lastRayTraceFailure: getLastRayTraceFailureForThisEval()
+                        });
+                    } catch (_) {}
+
+                    if (best && Array.isArray(best.hits) && best.hits.length > 0) {
+                        hits = best.hits;
+                        legacyFallbackHits = best.legacyFallbackHits;
+                        attempted = best.attempted;
+                        // Do not keep the previous early-abort penalty; proceed to compute spot size.
+                        earlyAbort = null;
+                    }
+                }
+
+                // If we still have an early-abort penalty, return it.
+                if (fastModeEnabled && earlyAbort && earlyAbort.failPenaltyUm !== undefined && earlyAbort.failPenaltyUm !== null) {
+                try {
+                    const f = getLastRayTraceFailureForThisEval();
+                    const d = (f && typeof f === 'object' && f.details && typeof f.details === 'object') ? f.details : null;
+                    stampSpotDebug({
+                        ok: false,
+                        reason: 'early-abort-low-hit-rate',
+                        hits: hits.length,
+                        rayCountRequested: rayCount,
+                        rayStartsGenerated: Array.isArray(rayStarts) ? rayStarts.length : 0,
+                        earlyAbortAttempted: attempted,
+                        earlyAbortHits: earlyAbort.hits,
+                        earlyAbortHitRate: earlyAbort.hitRate,
+                        earlyAbortReason: earlyAbort.reason,
+                        failPenaltyUm: earlyAbort.failPenaltyUm,
+                        failPenaltyKind: earlyAbort.failPenaltyKind,
+                        failPenaltyRatio: earlyAbort.failPenaltyRatio,
+                        lastRayTraceFailure: f,
+                        blockSurfaceIndex: d ? Number(d.surfaceIndex) : null,
+                        blockSurfaceNumber: d ? Number(d.surfaceNumber) : null,
+                        blockHitRadiusMm: d ? Number(d.hitRadiusMm) : null,
+                        blockApertureLimitMm: d ? Number(d.apertureLimitMm) : null,
+                        blockSemidia: d ? d.semidia : null,
+                        blockAperture: d ? d.aperture : null
+                    });
+                } catch (_) {}
+                return Number(earlyAbort.failPenaltyUm);
+                }
+            }
+
+            if (hits.length === 0) {
+                // NOTE: Intentionally do NOT retry with a tighter aperture during optimization.
+                // The previous fast-mode fallback would shrink the ray-start aperture when all rays vignette,
+                // which changes evaluation conditions mid-optimization and can cause unstable behavior.
+                // We instead rely on the bounded `no-ray-hits` penalty below.
+                if (fastModeEnabled) {
+                    try { stampSpotDebug({ retryTightApertureDisabled: true }); } catch (_) {}
+                }
+
+                if (hits.length === 0) {
+                try {
+                    if (typeof window !== 'undefined') {
+                        // Merge (do not overwrite) so earlier stamps like apertureLimitMm survive.
+                        stampSpotDebug({
+                            ok: false,
+                            reason: 'no-ray-hits',
+                            targetSurfaceIndex,
+                            rayCountRequested: rayCount,
+                            rayStartsGenerated: Array.isArray(rayStarts) ? rayStarts.length : 0,
+                            legacyFallbackHits,
+                            wavelength,
+                            fastModeEnabled,
+                            lastRayTraceFailure: getLastRayTraceFailureForThisEval()
+                        });
+                    }
+                } catch (_) {}
+                // Fast-mode: avoid saturating the optimizer with a 1e9 value.
+                // Use a bounded penalty that still strongly discourages vignetting.
+                if (fastModeEnabled) {
+                    const failPenalty = (() => {
+                        try {
+                            const f = getLastRayTraceFailureForThisEval();
+                            if (f && typeof f === 'object' && String(f.kind || '') === 'PHYSICAL_APERTURE_BLOCK') {
+                                const hitR = Number((f.hitRadiusMm ?? f.details?.hitRadiusMm));
+                                const limR = Number((f.apertureLimitMm ?? f.details?.apertureLimitMm));
+                                if (Number.isFinite(hitR) && Number.isFinite(limR) && limR > 0) {
+                                    const ratio = Math.max(1, hitR / limR);
+                                    // Keep within a sane numeric range for LM (do not overwhelm other residuals).
+                                    // Typical spot targets are ~10..100um, so keep this in the ~1e4..1e5 band.
+                                    const um = Math.min(2e5, Math.max(1e4, 1e4 * ratio));
+                                    return { um, kind: 'PHYSICAL_APERTURE_BLOCK', ratio };
+                                }
+                            }
+                        } catch (_) {}
+                        return { um: 5e4, kind: 'NO_RAY_HITS', ratio: null };
+                    })();
+                    try { stampSpotDebug({ failPenaltyUm: failPenalty.um, failPenaltyKind: failPenalty.kind, failPenaltyRatio: failPenalty.ratio }); } catch (_) {}
+                    return failPenalty.um;
+                }
+                return 1e9;
+                }
+            }
+
+            try {
+                if (typeof window !== 'undefined' && window.__cooptLastSpotSizeDebug) {
+                    window.__cooptLastSpotSizeDebug.ok = true;
+                    window.__cooptLastSpotSizeDebug.reason = 'ok';
+                    window.__cooptLastSpotSizeDebug.legacyFallbackHits = legacyFallbackHits;
+                    window.__cooptLastSpotSizeDebug.hits = hits.length;
+                    window.__cooptLastSpotSizeDebug.lastRayTraceFailure = getLastRayTraceFailureForThisEval();
+                    if (fastModeEnabled) {
+                        window.__cooptLastSpotSizeDebugFast = window.__cooptLastSpotSizeDebug;
+                    }
+                }
+            } catch (_) {}
+            let chief = hits.find(h => h.isChief) || null;
+            if (!chief) {
+                // Spot Diagram fallback: if no chief is flagged, use centroid-closest as chief.
+                const cx = hits.reduce((sum, h) => sum + h.x, 0) / hits.length;
+                const cy = hits.reduce((sum, h) => sum + h.y, 0) / hits.length;
+                let bestIdx = 0;
+                let bestDist = Infinity;
+                for (let i = 0; i < hits.length; i++) {
+                    const h = hits[i];
+                    const d = Math.hypot(h.x - cx, h.y - cy);
+                    if (d < bestDist) {
+                        bestDist = d;
+                        bestIdx = i;
+                    }
+                }
+                chief = hits[bestIdx] || hits[0];
+            }
+
+            let maxRUm = 0;
+            let sumX2 = 0;
+            let sumY2 = 0;
+            let n = 0;
+            for (const h of hits) {
+                const dxUm = (h.x - chief.x) * 1000;
+                const dyUm = (h.y - chief.y) * 1000;
+                const rUm = Math.hypot(dxUm, dyUm);
+                if (rUm > maxRUm) maxRUm = rUm;
+                sumX2 += dxUm * dxUm;
+                sumY2 += dyUm * dyUm;
+                n++;
+            }
+
+            if (n <= 0) return 1e9;
+            const rmsX = Math.sqrt(sumX2 / n);
+            const rmsY = Math.sqrt(sumY2 / n);
+            const rmsTotal = Math.sqrt(rmsX * rmsX + rmsY * rmsY);
+            const diameter = 2 * maxRUm;
+
+            if (metric === 'diameter') return diameter;
+            // default: rms
+            return rmsTotal;
+        } catch (err) {
+            stampSpotDebug({
+                ok: false,
+                reason: 'exception',
+                errorMessage: String((err && err.message !== undefined) ? err.message : err),
+                errorStack: (err && err.stack) ? String(err.stack) : ''
+            });
+            return 1e9;
+        }
+    }
+
+    getSurfaceIndexBySurfaceId(opticalSystemData, surfaceId1Based) {
+        const sNum = Number.isFinite(Number(surfaceId1Based)) ? Math.floor(Number(surfaceId1Based)) : NaN;
+        if (!Number.isFinite(sNum) || sNum < 0) return -1;
+
+        const byId = Array.isArray(opticalSystemData)
+            ? opticalSystemData.findIndex(r => r && Number(r.id) === sNum)
+            : -1;
+        if (byId >= 0) return byId;
+
+        // Fallback: treat as array index (1-based typical UI, but allow 0-based too)
+        if (Array.isArray(opticalSystemData)) {
+            const idx1 = sNum; // if user passes 0-based index, this matches; if 1-based id, likely already found above
+            if (idx1 >= 0 && idx1 < opticalSystemData.length) return idx1;
+            const idx0 = sNum - 1;
+            if (idx0 >= 0 && idx0 < opticalSystemData.length) return idx0;
+        }
+
+        return -1;
+    }
+
+    getSemidiaFromSurfaceRow(surfaceRow) {
+        if (!surfaceRow) return Infinity;
+        const v = surfaceRow.semidia ?? surfaceRow['Semi Diameter'] ?? surfaceRow['semi diameter'];
+        const n = Number(v);
+        return (Number.isFinite(n) && n > 0) ? n : Infinity;
+    }
+
+    isInfiniteConjugateFromObjectRow(opticalSystemData) {
+        const t = opticalSystemData?.[0]?.thickness;
+        if (t === Infinity) return true;
+        const s = (t === undefined || t === null) ? '' : String(t).trim().toUpperCase();
+        return (s === 'INF' || s === 'INFINITY');
+    }
+
+    normalizeDir(x, y, z) {
+        const nx = Number(x);
+        const ny = Number(y);
+        const nz = Number(z);
+        const L = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (!Number.isFinite(L) || L <= 0) return { x: 0, y: 0, z: 1 };
+        return { x: nx / L, y: ny / L, z: nz / L };
+    }
+
+    traceRayToSurfaceIndex(opticalSystemData, ray0, surfaceIndex) {
+        const p = traceRay(opticalSystemData, ray0, 1.0, null, surfaceIndex);
+        if (!p || !Array.isArray(p)) return null;
+        const hit = p[surfaceIndex + 1];
+        if (!hit) return null;
+        return hit;
+    }
+
+    solveCrossRayToStopEdgeY(opticalSystemData, stopIndex, stopRadius, wavelength) {
+        const isInfinite = this.isInfiniteConjugateFromObjectRow(opticalSystemData);
+        const zStart = isInfinite ? -25 : 0;
+        const targetY = stopRadius;
+
+        const evalFunc = (u) => {
+            const uNum = Number(u);
+            if (!Number.isFinite(uNum)) return { ok: false, blocked: true, value: Infinity };
+
+            let ray0;
+            if (isInfinite) {
+                ray0 = {
+                    pos: { x: 0, y: uNum, z: zStart },
+                    dir: { x: 0, y: 0, z: 1 },
+                    wavelength
+                };
+            } else {
+                ray0 = {
+                    pos: { x: 0, y: 0, z: zStart },
+                    dir: this.normalizeDir(0, uNum, 1),
+                    wavelength
+                };
+            }
+
+            const hit = this.traceRayToSurfaceIndex(opticalSystemData, ray0, stopIndex);
+            if (!hit) {
+                return { ok: false, blocked: true, value: Infinity, ray0 };
+            }
+            const yStop = Number(hit.y);
+            if (!Number.isFinite(yStop)) {
+                return { ok: false, blocked: true, value: Infinity, ray0 };
+            }
+            return { ok: true, blocked: false, value: yStop - targetY, yStop, ray0 };
+        };
+
+        // f(0) は通常 negative（0 - targetY）なので、正側へブラケット
+        const f0 = evalFunc(0);
+        if (!f0.ok && !f0.ray0) return null;
+
+        let lo = 0;
+        let hi = isInfinite ? Math.max(1e-6, stopRadius) : 0.05; // finite は角度パラメータなので小さめから
+
+        let flo = f0.ok ? f0.value : -Infinity;
+        let fhiObj = evalFunc(hi);
+        let tries = 0;
+
+        // hi を拡大して符号反転（または blocked=overshoot 相当）を見つける
+        while (tries < 40) {
+            if (fhiObj.ok) {
+                if (fhiObj.value >= 0) break;
+            } else if (fhiObj.blocked) {
+                // blocked は「大きすぎる」側として扱い、ブラケット成立
+                break;
+            }
+            hi *= 2;
+            fhiObj = evalFunc(hi);
+            tries++;
+        }
+
+        // ブラケット不成立
+        if (!(fhiObj.ok && fhiObj.value >= 0) && !fhiObj.blocked) {
+            return null;
+        }
+
+        // 二分探索
+        let bestRay0 = (fhiObj && fhiObj.ray0) ? fhiObj.ray0 : (f0.ray0 || null);
+        for (let it = 0; it < 50; it++) {
+            const mid = (lo + hi) * 0.5;
+            const fm = evalFunc(mid);
+            if (fm.ray0) bestRay0 = fm.ray0;
+
+            if (fm.ok) {
+                if (Math.abs(fm.value) < 1e-7) {
+                    bestRay0 = fm.ray0;
+                    break;
+                }
+                if (fm.value >= 0) {
+                    hi = mid;
+                    fhiObj = fm;
+                } else {
+                    lo = mid;
+                    flo = fm.value;
+                }
+            } else {
+                // blocked => hi 側に寄せる
+                hi = mid;
+            }
+        }
+
+        return bestRay0;
+    }
+
+    calculateClearanceVsSemidia(operand, opticalSystemData) {
+        if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return 0;
+
+        const surfaceId = Number.isFinite(Number(operand?.param1)) ? Math.floor(Number(operand.param1)) : NaN;
+        if (!Number.isFinite(surfaceId)) return 0;
+
+        const { source: sourceRows } = this.getConfigTablesByConfigId(operand.configId);
+        const wlRow = (operand?.param2 !== undefined && operand?.param2 !== null && String(operand.param2).trim() !== '')
+            ? Number(operand.param2)
+            : NaN;
+        const wavelength = Number.isFinite(wlRow)
+            ? this.getWavelengthFromSourceRows(sourceRows, wlRow)
+            : this.getPrimaryWavelengthFromSourceRows(sourceRows);
+
+        const marginRaw = Number(operand?.param3);
+        const margin = Number.isFinite(marginRaw) ? marginRaw : 0;
+
+        const surfIndex = this.getSurfaceIndexBySurfaceId(opticalSystemData, surfaceId);
+        if (surfIndex < 0) return 0;
+
+        const semidia = this.getSemidiaFromSurfaceRow(opticalSystemData[surfIndex]);
+        if (!Number.isFinite(semidia) || semidia === Infinity) return 0;
+
+        const stopIndex = findStopSurfaceIndex(opticalSystemData);
+        if (stopIndex < 0) return 0;
+        const stopRadius = this.getSemidiaFromSurfaceRow(opticalSystemData[stopIndex]);
+        if (!Number.isFinite(stopRadius) || stopRadius === Infinity) return 0;
+
+        const cfgKey = operand?.configId ? String(operand.configId) : 'active';
+        const cacheKey = `clrh-real:${cfgKey}:wl=${wavelength}`;
+
+        let cached = this._runtimeCache ? this._runtimeCache.get(cacheKey) : null;
+        if (!cached) {
+            const ray0 = this.solveCrossRayToStopEdgeY(opticalSystemData, stopIndex, stopRadius, wavelength);
+            if (!ray0) return 0;
+
+            const fullPath = traceRay(opticalSystemData, ray0, 1.0, null, null);
+            cached = { ray0, fullPath };
+            if (this._runtimeCache) this._runtimeCache.set(cacheKey, cached);
+        }
+
+        const fullPath = cached.fullPath;
+        if (!fullPath || !Array.isArray(fullPath)) {
+            // 光線が途中でブロックされた等
+            return 1e6;
+        }
+
+        const hit = fullPath[surfIndex + 1];
+        if (!hit) {
+            return 1e6;
+        }
+        const rayY = Math.abs(Number(hit.y));
+        if (!Number.isFinite(rayY)) return 1e6;
+
+        const violation = rayY + margin - semidia;
+        return violation > 0 ? violation : 0;
+    }
+
+    /**
+     * ConfigIdに対応するSource/Objectデータを取得（無ければ現在のテーブルを使用）
+     */
+    getConfigTablesByConfigId(configId) {
+        try {
+            const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+            const activeConfigId = (systemConfig?.activeConfigId !== undefined && systemConfig?.activeConfigId !== null)
+                ? String(systemConfig.activeConfigId)
+                : '';
+
+            let targetConfigId = configId;
+            if (!targetConfigId) {
+                targetConfigId = activeConfigId;
+            }
+            const targetIdStr = (targetConfigId !== undefined && targetConfigId !== null) ? String(targetConfigId) : '';
+
+            // For the active config, prefer the *live UI tables* (so Requirements update immediately
+            // even if the user hasn't saved the configuration snapshot back into systemConfigurations).
+            if (activeConfigId && targetIdStr && targetIdStr === activeConfigId) {
+                return {
+                    source: getSourceRows(),
+                    object: (typeof window !== 'undefined' && window.getObjectRows)
+                        ? window.getObjectRows()
+                        : (window.tableObject ? window.tableObject.getData() : [])
+                };
+            }
+
+            const config = systemConfig?.configurations?.find(c => String(c.id) === String(targetIdStr));
+            if (!config) {
+                return {
+                    source: getSourceRows(),
+                    object: (typeof window !== 'undefined' && window.getObjectRows) ? window.getObjectRows() : (window.tableObject ? window.tableObject.getData() : [])
+                };
+            }
+            return {
+                source: Array.isArray(config.source) ? config.source : getSourceRows(),
+                object: Array.isArray(config.object) ? config.object : ((typeof window !== 'undefined' && window.getObjectRows) ? window.getObjectRows() : (window.tableObject ? window.tableObject.getData() : []))
+            };
+        } catch {
+            return {
+                source: getSourceRows(),
+                object: (typeof window !== 'undefined' && window.getObjectRows) ? window.getObjectRows() : (window.tableObject ? window.tableObject.getData() : [])
+            };
+        }
+    }
+
+    getWavelengthFromSourceRows(sourceRows, sourceIndex1Based) {
+        const idx = Number.isFinite(Number(sourceIndex1Based)) ? Math.floor(Number(sourceIndex1Based)) : 1;
+        const index0 = Math.max(0, idx - 1);
+        const row = Array.isArray(sourceRows) ? sourceRows[index0] : null;
+        const wl = row ? Number(row.wavelength) : NaN;
+        return (Number.isFinite(wl) && wl > 0) ? wl : 0.5875618;
+    }
+
+    getPrimaryWavelengthFromSourceRows(sourceRows) {
+        if (!Array.isArray(sourceRows) || sourceRows.length === 0) return 0.5875618;
+        const primaryRow = sourceRows.find(r => r && r.primary && String(r.primary).toLowerCase().includes('primary'));
+        const wl = primaryRow ? Number(primaryRow.wavelength) : NaN;
+        if (Number.isFinite(wl) && wl > 0) return wl;
+        // フォールバック: 1行目
+        const wl0 = Number(sourceRows[0]?.wavelength);
+        return (Number.isFinite(wl0) && wl0 > 0) ? wl0 : 0.5875618;
+    }
+
+    getSystemWavelengthFromOperandOrPrimary(operand, sourceRows) {
+        const raw = (operand && operand.param1 !== undefined && operand.param1 !== null) ? String(operand.param1).trim() : '';
+        if (raw === '') return this.getPrimaryWavelengthFromSourceRows(sourceRows);
+
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n <= 0) return this.getPrimaryWavelengthFromSourceRows(sourceRows);
+
+        // Backward compatible behavior: most operands historically used "λ idx" (Source row number).
+        // In practice, users often type the wavelength value itself (e.g. 0.4861, 0.5876, 0.6563).
+        // If we treat 0.4861 as an index, Math.floor() -> 0, and we incorrectly fall back to Primary.
+        // Heuristic:
+        // - n < 1 : almost certainly wavelength in µm
+        // - non-integer with '.' or 'e' : treat as wavelength in µm
+        const s = raw.toLowerCase();
+        const isNonIntegerLiteral = (s.includes('.') || s.includes('e')) && Math.abs(n - Math.round(n)) > 1e-12;
+        const looksLikeWavelengthUm = (n < 1) || isNonIntegerLiteral;
+        if (looksLikeWavelengthUm) return n;
+
+        const idx1 = Math.floor(n);
+        if (idx1 > 0) return this.getWavelengthFromSourceRows(sourceRows, idx1);
+        return this.getPrimaryWavelengthFromSourceRows(sourceRows);
+    }
+
+    safeFiniteNumberOrZero(v) {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    computeTotalSystemLengthMm(opticalSystemData) {
+        if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return 0;
+        let total = 0;
+        for (const row of opticalSystemData) {
+            const tRaw = row ? row.thickness : undefined;
+            if (tRaw === undefined || tRaw === null) continue;
+            const s = String(tRaw).trim().toUpperCase();
+            if (s === 'INF' || s === 'INFINITY') continue;
+            const t = Number(tRaw);
+            if (Number.isFinite(t)) total += t;
+        }
+        return total;
+    }
+
+    computeObjectDistanceMm(opticalSystemData) {
+        const tRaw = opticalSystemData?.[0]?.thickness;
+        if (tRaw === undefined || tRaw === null) return 0;
+        const s = String(tRaw).trim().toUpperCase();
+        if (s === 'INF' || s === 'INFINITY') return 0;
+        const t = Number(tRaw);
+        return Number.isFinite(t) ? t : 0;
+    }
+
+    getPrimarySystemMetricsCached(operand, opticalSystemData) {
+        const { source: sourceRows } = this.getConfigTablesByConfigId(operand?.configId);
+        const wavelength = this.getSystemWavelengthFromOperandOrPrimary(operand, sourceRows);
+        const cfgKey = operand?.configId ? String(operand.configId) : 'active';
+        const cacheKey = `primary-metrics:${cfgKey}:wl=${wavelength}`;
+
+        const cached = this._runtimeCache ? this._runtimeCache.get(cacheKey) : null;
+        if (cached) return cached;
+
+        const paraxial = calculateParaxialData(opticalSystemData, wavelength);
+
+        const fl = this.safeFiniteNumberOrZero(paraxial?.focalLength);
+        const bfl = this.safeFiniteNumberOrZero(paraxial?.backFocalLength);
+        const imd = this.safeFiniteNumberOrZero(paraxial?.imageDistance);
+        const finalAlpha = Number(paraxial?.finalAlpha);
+
+        // EFL (System Data): EFL = 1 / alpha(final) with h[1]=1
+        const eflTrace = calculateFullSystemParaxialTrace(opticalSystemData, wavelength);
+        const efl = (eflTrace && Number.isFinite(eflTrace.finalAlpha) && Math.abs(eflTrace.finalAlpha) > 1e-12)
+            ? (1.0 / eflTrace.finalAlpha)
+            : 0;
+
+        const totalLength = this.computeTotalSystemLengthMm(opticalSystemData);
+        const objd = this.computeObjectDistanceMm(opticalSystemData);
+
+        const exitPupilDetails = paraxial?.exitPupilDetails;
+        const newSpecPupils = paraxial?.newSpecPupils;
+        const exitPupil = newSpecPupils?.exitPupil;
+        const entrancePupil = newSpecPupils?.entrancePupil;
+
+        // Prefer new method details if available
+        const expd = this.safeFiniteNumberOrZero(exitPupilDetails?.diameter ?? exitPupil?.diameter ?? paraxial?.exitPupilDiameter);
+        const exPosOrigin = this.safeFiniteNumberOrZero(exitPupilDetails?.position ?? exitPupil?.position);
+        const exppFromImage = (Number.isFinite(exPosOrigin) && Number.isFinite(imd)) ? (exPosOrigin - imd) : 0;
+
+        // βexp: prefer explicit betaExp, else magnification
+        const betaExpRaw = (typeof exitPupil?.betaExp === 'number') ? exitPupil.betaExp
+            : (typeof exitPupilDetails?.betaExp === 'number') ? exitPupilDetails.betaExp
+            : (typeof exitPupilDetails?.magnification === 'number') ? exitPupilDetails.magnification
+            : (typeof exitPupil?.magnification === 'number') ? exitPupil.magnification
+            : NaN;
+        const betaExp = this.safeFiniteNumberOrZero(betaExpRaw);
+
+        const enpd = this.safeFiniteNumberOrZero(entrancePupil?.diameter ?? paraxial?.entrancePupilDiameter);
+        const enpp = this.safeFiniteNumberOrZero(entrancePupil?.position);
+        const enpm = this.safeFiniteNumberOrZero(entrancePupil?.magnification);
+
+        // Paraxial magnification (finite object): beta = alpha[1]/alpha[final], alpha[1] = -1/objd (h[1]=1, n=1)
+        let pmag = 0;
+        if (objd > 0 && Number.isFinite(finalAlpha) && Math.abs(finalAlpha) > 1e-12) {
+            const initialAlpha = -1.0 / objd;
+            pmag = initialAlpha / finalAlpha;
+        }
+
+        // Working F#: (-ExP + id) / ExPD (using origin position)
+        let fnoWrk = 0;
+        if (Number.isFinite(exPosOrigin) && Number.isFinite(imd) && expd > 0) {
+            fnoWrk = (-exPosOrigin + imd) / expd;
+        }
+
+        // Object Space F# = abs(F#work / beta) if beta != 0
+        let fnoObj = 0;
+        if (Math.abs(pmag) > 1e-12 && Number.isFinite(fnoWrk)) {
+            fnoObj = Math.abs(fnoWrk / pmag);
+        }
+
+        // Image Space F# = f' / EnPD (System Data uses FL)
+        let fnoImg = 0;
+        if (fl > 0 && enpd > 0) {
+            fnoImg = fl / enpd;
+        }
+
+        // NAimg = 1/(2*F#work), NAobj = abs(NAimg * beta)
+        let naImg = 0;
+        let naObj = 0;
+        if (Number.isFinite(fnoWrk) && Math.abs(fnoWrk) > 1e-12) {
+            naImg = 1.0 / (2.0 * fnoWrk);
+            if (Number.isFinite(pmag)) {
+                naObj = Math.abs(naImg * pmag);
+            }
+        }
+
+        const metrics = {
+            FL: this.safeFiniteNumberOrZero(fl),
+            EFL: this.safeFiniteNumberOrZero(efl),
+            BFL: this.safeFiniteNumberOrZero(bfl),
+            IMD: this.safeFiniteNumberOrZero(imd),
+            OBJD: this.safeFiniteNumberOrZero(objd),
+            TSL: this.safeFiniteNumberOrZero(totalLength),
+            BEXP: this.safeFiniteNumberOrZero(betaExp),
+            EXPD: this.safeFiniteNumberOrZero(expd),
+            EXPP: this.safeFiniteNumberOrZero(exppFromImage),
+            ENPD: this.safeFiniteNumberOrZero(enpd),
+            ENPP: this.safeFiniteNumberOrZero(enpp),
+            ENPM: this.safeFiniteNumberOrZero(enpm),
+            PMAG: this.safeFiniteNumberOrZero(pmag),
+            FNO_OBJ: this.safeFiniteNumberOrZero(fnoObj),
+            FNO_IMG: this.safeFiniteNumberOrZero(fnoImg),
+            FNO_WRK: this.safeFiniteNumberOrZero(fnoWrk),
+            NA_OBJ: this.safeFiniteNumberOrZero(naObj),
+            NA_IMG: this.safeFiniteNumberOrZero(naImg),
+        };
+
+        if (this._runtimeCache) this._runtimeCache.set(cacheKey, metrics);
+        return metrics;
+    }
+
+    calculatePrimarySystemMetric(operand, opticalSystemData, key) {
+        if (!Array.isArray(opticalSystemData) || opticalSystemData.length === 0) return 0;
+        const metrics = this.getPrimarySystemMetricsCached(operand, opticalSystemData);
+        return this.safeFiniteNumberOrZero(metrics ? metrics[key] : 0);
+    }
+
+    /**
+     * Seidel係数合計（I/II/III/IV/V/LCA/TCA）を評価値として返す
+     * - param1(λ): Sourceテーブルの行番号（1始まり）
+     * - 3rd係数: 指定波長で計算
+     * - LCA/TCA: Primary波長に対する差（selected - primary）
+     */
+    calculateSeidelTotal(operand, opticalSystemData, totalKey) {
+        if (!opticalSystemData || opticalSystemData.length < 2) return 0;
+
+        const { source: sourceRows, object: objectRows } = this.getConfigTablesByConfigId(operand.configId);
+        const mode = parseInt(operand.param2) || 0;
+        const isAfocal = mode === 1;
+
+        // S1 (Context3): 0 => total, else surface
+        const s1Num = Number.isFinite(Number(operand?.param3)) ? Math.floor(Number(operand.param3)) : 0;
+        const s1 = (Number.isFinite(s1Num) && s1Num > 0) ? s1Num : 0;
+
+        // Reference Focal Length (Context4)
+        // - blank => Auto
+        // - 0 => Auto
+        // Imaging: Auto means use calculated FL (ignore textbox)
+        // Afocal: Auto means default unit scale (see afocal module)
+        const refFLRaw = (operand && operand.param4 !== undefined && operand.param4 !== null) ? String(operand.param4).trim() : '';
+        const refFLNum = (refFLRaw === '') ? 0 : Number(refFLRaw);
+        const referenceFocalLengthAfocal = (Number.isFinite(refFLNum) && refFLNum !== 0) ? refFLNum : undefined;
+        const referenceFocalLengthOverrideImaging = (Number.isFinite(refFLNum) && refFLNum !== 0) ? refFLNum : 0;
+
+        const primaryWavelength = this.getPrimaryWavelengthFromSourceRows(sourceRows);
+        const sourceIndex = parseInt(operand.param1) || 1;
+        const selectedWavelength = this.getWavelengthFromSourceRows(sourceRows, sourceIndex);
+
+        // LCA/TCA は System Data の波長設定を使用（operand param1 では指定しない）
+        const baseWavelength = (totalKey === 'LCA' || totalKey === 'TCA') ? primaryWavelength : selectedWavelength;
+
+        // キャッシュキー（同一run内）
+        const cfgKey = operand.configId ? String(operand.configId) : 'active';
+        const cacheKey = `seidel:${cfgKey}:mode=${isAfocal ? 'afocal' : 'imaging'}:wl=${baseWavelength}:s1=${s1}:refFL=${(isAfocal ? (referenceFocalLengthAfocal ?? 'auto') : (referenceFocalLengthOverrideImaging === 0 ? 'auto' : referenceFocalLengthOverrideImaging))}:key=${totalKey}`;
+        if (this._runtimeCache && this._runtimeCache.has(cacheKey)) {
+            return this._runtimeCache.get(cacheKey);
+        }
+
+        try {
+            let seidel;
+
+            if (isAfocal) {
+                // Stop index (0-based). fallback to 1 like existing afocal handler.
+                let stopIndex = opticalSystemData.findIndex(row => row && (row['object type'] === 'Stop' || row.object === 'Stop'));
+                if (stopIndex === -1) {
+                    const fallback = findStopSurfaceIndex ? findStopSurfaceIndex(opticalSystemData) : -1;
+                    stopIndex = (fallback >= 0) ? fallback : 1;
+                }
+
+                seidel = calculateAfocalSeidelCoefficientsIntegrated(
+                    opticalSystemData,
+                    baseWavelength,
+                    stopIndex,
+                    objectRows,
+                    referenceFocalLengthAfocal
+                );
+            } else {
+                // Imaging: match System Data (no chromaticOverrides)
+                seidel = calculateSeidelCoefficients(
+                    opticalSystemData,
+                    baseWavelength,
+                    objectRows,
+                    { referenceFocalLengthOverride: referenceFocalLengthOverrideImaging }
+                );
+            }
+
+            let v = NaN;
+            if (s1 === 0) {
+                v = seidel?.totals ? Number(seidel.totals[totalKey]) : NaN;
+            } else {
+                const coeffs = seidel?.surfaceCoefficients;
+                const c = Array.isArray(coeffs)
+                    ? (
+                        // Prefer matching by Surf id shown in System Data (row.id)
+                        coeffs.find(sc => sc && Number(opticalSystemData?.[Number(sc.surfaceIndex)]?.id) === Number(s1))
+                        // Fallback: treat S1 as surfaceIndex (array index)
+                        || coeffs.find(sc => sc && Number(sc.surfaceIndex) === Number(s1))
+                      )
+                    : null;
+                v = c ? Number(c[totalKey]) : NaN;
+            }
+
+            const value = Number.isFinite(v) ? v : 0;
+
+            if (this._runtimeCache) this._runtimeCache.set(cacheKey, value);
+            return value;
+        } catch (e) {
+            console.warn('⚠️ Seidel total evaluation failed:', e);
+            if (this._runtimeCache) this._runtimeCache.set(cacheKey, 0);
+            return 0;
+        }
+    }
+    
+    /**
+     * ConfigIdに対応する光学系データを取得
+     * @param {string} configId - Configuration ID（空文字列の場合は現在のアクティブなConfig）
+     * @returns {Array} 光学系データ
+     */
+    getOpticalSystemDataByConfigId(configId) {
+        try {
+            const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+
+            const activeConfigId = (systemConfig?.activeConfigId !== undefined && systemConfig?.activeConfigId !== null)
+                ? String(systemConfig.activeConfigId)
+                : '';
+            
+            // IMPORTANT: distinguish "Current" (blank configId) from an explicit config selection.
+            // If configId is blank, we evaluate against the live UI tables for the active config.
+            // If configId is explicitly provided (even if it equals activeConfigId), we evaluate
+            // against the stored config snapshot/blocks to keep Requirements deterministic.
+            const wantsCurrent = (configId === undefined || configId === null || String(configId).trim() === '');
+            const targetConfigId = wantsCurrent ? activeConfigId : configId;
+
+            const targetIdStr = (targetConfigId !== undefined && targetConfigId !== null) ? String(targetConfigId) : '';
+
+            // Only "Current" uses the *live* Optical System table.
+            // Explicit config requirements should NOT depend on transient UI edits.
+            if (wantsCurrent && activeConfigId && targetIdStr && targetIdStr === activeConfigId) {
+                return getOpticalSystemRows();
+            }
+            
+            // 対応するConfigurationを検索
+            const config = systemConfig?.configurations?.find(c => String(c.id) === String(targetIdStr));
+            
+            if (!config) {
+                console.warn(`Config ID ${targetIdStr} が見つかりません。現在のテーブルデータを使用します。`);
+                return getOpticalSystemRows();
+            }
+            
+            // Blocks canonical: if blocks exist, optionally apply scenario overrides and expand on the fly.
+            // Optional non-persistent override hook (for Suggest/tests):
+            // window.__cooptBlocksOverride = { [configId]: blocksArray }
+            let overrideBlocks = null;
+            try {
+                const ov = (typeof window !== 'undefined') ? window.__cooptBlocksOverride : null;
+                if (ov && typeof ov === 'object') {
+                    const key = String(targetConfigId);
+                    const b = ov[key];
+                    if (Array.isArray(b)) overrideBlocks = b;
+                }
+            } catch (_) {
+                // ignore
+            }
+
+            const hasBlocks = Array.isArray(overrideBlocks || config.blocks);
+            const scenarios = Array.isArray(config.scenarios) ? config.scenarios : null;
+
+            // Optional override hook for optimizers/tests (do NOT persist):
+            // window.__cooptScenarioOverride = { [configId]: scenarioId }
+            let scenarioId = null;
+            try {
+                const ov = (typeof window !== 'undefined') ? window.__cooptScenarioOverride : null;
+                if (ov && typeof ov === 'object') {
+                    const key = String(targetConfigId);
+                    if (ov[key]) scenarioId = String(ov[key]);
+                }
+            } catch (_) {
+                // ignore
+            }
+
+            if (!scenarioId && config.activeScenarioId) {
+                scenarioId = String(config.activeScenarioId);
+            }
+
+            if (hasBlocks) {
+                let blocksToExpand = overrideBlocks || config.blocks;
+
+                if (scenarioId && scenarios) {
+                    const scn = scenarios.find(s => s && String(s.id) === String(scenarioId));
+                    const overrides = scn && isPlainObject(scn.overrides) ? scn.overrides : null;
+                    blocksToExpand = applyOverridesToBlocks(blocksToExpand, overrides);
+                }
+
+                const expanded = expandBlocksToOpticalSystemRows(blocksToExpand);
+                if (expanded && Array.isArray(expanded.rows)) {
+                    // Preserve semidia (aperture) from persisted opticalSystem when available.
+                    // Without this, Blocks schema defaults can vignette rays compared to the saved surface table.
+                    try {
+                        const legacyRows = Array.isArray(config?.opticalSystem) ? config.opticalSystem : null;
+                        const rows = expanded.rows;
+
+                        const normType = (r) => String(r?.['object type'] ?? r?.object ?? '').trim().toLowerCase();
+                        const findBlockById = (blockId) => {
+                            if (!blockId) return null;
+                            const bid = String(blockId);
+                            return Array.isArray(blocksToExpand)
+                                ? blocksToExpand.find(b => b && String(b.blockId) === bid)
+                                : null;
+                        };
+                        const getExplicitStopSemiDiameter = (blockId) => {
+                            const b = findBlockById(blockId);
+                            const v = b?.parameters?.semiDiameter;
+                            const n = Number(v);
+                            return Number.isFinite(n) && n > 0 ? n : null;
+                        };
+
+                        if (legacyRows && rows.length > 0) {
+                            const legacyObj = legacyRows[0];
+                            const lo = String(legacyObj?.semidia ?? '').trim();
+                            if (lo !== '') rows[0] = { ...rows[0], semidia: legacyObj.semidia };
+
+                            const n = Math.min(legacyRows.length, rows.length);
+                            for (let i = 0; i < n; i++) {
+                                const legacy = legacyRows[i];
+                                const row = rows[i];
+                                if (!legacy || typeof legacy !== 'object' || !row || typeof row !== 'object') continue;
+
+                                const lsRaw = legacy.semidia;
+                                const ls = String(lsRaw ?? '').trim();
+                                if (ls === '') continue;
+
+                                const t = normType(row);
+                                if (t === 'stop') {
+                                    const explicit = getExplicitStopSemiDiameter(row._blockId);
+                                    if (explicit !== null) continue;
+                                }
+                                row.semidia = lsRaw;
+                            }
+                        }
+                    } catch (_) {}
+
+                    // Preserve Object thickness to keep evaluation consistent with the UI table.
+                    // Blocks expansion currently creates a default Object row (thickness may be 100).
+                    // Prefer config.opticalSystem[0].thickness (persisted), else for the active config
+                    // fall back to OpticalSystemTableData[0].thickness (UI table snapshot).
+                    try {
+                        const rows = expanded.rows;
+                        if (rows.length > 0) {
+                            const hasObjectPlane = Array.isArray(config?.blocks) && config.blocks.some(b => String(b?.blockType ?? '').trim() === 'ObjectPlane');
+                            if (hasObjectPlane) return expanded.rows;
+
+                            let preferredThickness = undefined;
+
+                            const persistedThickness = config?.opticalSystem?.[0]?.thickness;
+                            if (persistedThickness !== undefined && persistedThickness !== null && String(persistedThickness).trim() !== '') {
+                                preferredThickness = persistedThickness;
+                            } else if (systemConfig && String(systemConfig.activeConfigId) === String(targetConfigId)) {
+                                const tableRows = (() => {
+                                    try {
+                                        const raw = localStorage.getItem('OpticalSystemTableData');
+                                        const parsed = raw ? JSON.parse(raw) : null;
+                                        return Array.isArray(parsed) ? parsed : null;
+                                    } catch {
+                                        return null;
+                                    }
+                                })();
+                                const tableThickness = tableRows?.[0]?.thickness;
+                                if (tableThickness !== undefined && tableThickness !== null && String(tableThickness).trim() !== '') {
+                                    preferredThickness = tableThickness;
+                                }
+                            }
+
+                            if (preferredThickness !== undefined) {
+                                rows[0] = { ...rows[0], thickness: preferredThickness };
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('⚠️ Failed to preserve Object thickness for merit evaluation:', e);
+                    }
+
+                    try {
+                        const RAYTRACE_DEBUG = !!(typeof globalThis !== 'undefined' && globalThis.__RAYTRACE_DEBUG);
+                        if (RAYTRACE_DEBUG) {
+                            console.log(`📊 Config "${config.name}" (ID: ${targetIdStr}) blocks expanded${scenarioId ? ` (scenario: ${scenarioId})` : ''}`);
+                        }
+                    } catch (_) {}
+                    return expanded.rows;
+                }
+            }
+
+            console.log(`📊 Config "${config.name}" (ID: ${targetIdStr}) の光学系データを使用`);
+            return config.opticalSystem || [];
+            
+        } catch (error) {
+            console.error('光学系データ取得エラー:', error);
+            return getOpticalSystemRows();
+        }
+    }
+    
+    /**
+     * EFFL (Effective Focal Length) を計算
+     * @param {Object} operand - オペランドデータ
+     * @param {Array} opticalSystemData - 光学系データ
+     * @returns {number} 焦点距離 (mm)
+     */
+    calculateEFFL(operand, opticalSystemData) {
+        if (!opticalSystemData || opticalSystemData.length === 0) {
+            console.warn('EFFL計算: 光学系データがありません');
+            return 0;
+        }
+        
+        console.log('🔍 EFFL計算開始:', {
+            param1: operand.param1,
+            param2: operand.param2,
+            param3: operand.param3,
+            dataLength: opticalSystemData.length
+        });
+        
+        // param1: Sourceテーブルの行番号 (1から始まる、デフォルト1=d-line)
+        // param2: 開始面のSurface番号（id値） (デフォルト1)
+        // param3: 終了面のSurface番号（id値） (デフォルト最終面の1つ前)
+        
+        const sourceIndex = parseInt(operand.param1) || 1;
+        const startSurf = parseInt(operand.param2) || 1;
+        const endSurf = parseInt(operand.param3) || (opticalSystemData.length - 2);
+        
+        // Sourceテーブルから波長を取得（operand.configId がある場合はそのConfigのSourceを優先）
+        const sourceRows = this.getConfigTablesByConfigId(operand.configId).source;
+        let wavelength = 0.5875618; // デフォルトはd-line
+        
+        if (sourceRows && sourceRows.length > 0) {
+            // sourceIndexは1から始まる（表示用）ので、配列インデックスは-1
+            const sourceRow = sourceRows[sourceIndex - 1];
+            if (sourceRow && sourceRow.wavelength) {
+                wavelength = parseFloat(sourceRow.wavelength);
+                console.log(`📡 Source${sourceIndex}の波長を使用: ${wavelength} μm`);
+            } else {
+                console.warn(`⚠️ Source${sourceIndex}が見つかりません。デフォルト波長を使用: ${wavelength} μm`);
+            }
+        } else {
+            console.warn('⚠️ Sourceテーブルが空です。デフォルト波長を使用: ${wavelength} μm');
+        }
+        
+        console.log('📊 面範囲:', {
+            startSurf,
+            endSurf,
+            sourceIndex,
+            wavelength,
+            totalSurfaces: opticalSystemData.length
+        });
+        
+        // 指定範囲の面を抽出
+        let subSystemData = [];
+        
+        // Object面を追加（開始idがObject面のidと同じ場合）
+        const objectSurfaceIdNum = Number(opticalSystemData[0]?.id);
+        const objectSurfaceId = Number.isFinite(objectSurfaceIdNum) ? objectSurfaceIdNum : 1;
+        if (startSurf === objectSurfaceId) {
+            subSystemData.push(opticalSystemData[0]); // Object面
+            console.log(`✓ Object面追加（id=${objectSurfaceId}）:`, opticalSystemData[0]);
+        } else {
+            // 中間から開始する場合は、仮想Object面を作成
+            const virtualObject = {
+                surface: 0,
+                "object type": "Object",
+                thickness: Infinity,
+                comment: "Virtual Object"
+            };
+            subSystemData.push(virtualObject);
+            console.log(`✓ 仮想Object面追加（開始id=${startSurf}）`);
+        }
+        
+        // 指定範囲の面を追加（Surface番号: startSurf～endSurf）
+        // param2, param3は面のSurface番号（idフィールドの値）を指定
+        for (let i = 1; i < opticalSystemData.length - 1; i++) {
+            const surface = opticalSystemData[i];
+            const surfaceIdNum = Number(surface?.id);
+            if (!Number.isFinite(surfaceIdNum)) continue;
+            if (surfaceIdNum >= startSurf && surfaceIdNum <= endSurf) {
+                subSystemData.push({ ...surface, id: surfaceIdNum });
+                console.log(`✓ 面${i}追加（id=${surfaceIdNum}）:`, surface);
+            }
+        }
+        
+        // Image面を追加
+        const imageSurface = {
+            surface: subSystemData.length,
+            "object type": "Image",
+            thickness: 0,
+            comment: "Image"
+        };
+        subSystemData.push(imageSurface);
+        console.log('✓ Image面追加');
+        
+        console.log('📋 サブシステムデータ:', subSystemData);
+        
+        // EFL計算: System Dataと同じ方法を使用
+        // calculateFullSystemParaxialTraceを使用して h[1] / α[IMG-1] で計算
+        const paraxialResult = calculateFullSystemParaxialTrace(subSystemData, wavelength);
+        
+        console.log('🎯 近軸追跡結果:', paraxialResult);
+        
+        if (!paraxialResult || Math.abs(paraxialResult.finalAlpha) < 1e-10) {
+            console.warn(`❌ EFFL計算失敗: 面${startSurf}〜${endSurf}, 波長${wavelength}μm`);
+            return 0;
+        }
+        
+        // EFL = h[1] / α[IMG-1], h[1] = 1.0 なので EFL = 1.0 / α[IMG-1]
+        const efl = 1.0 / paraxialResult.finalAlpha;
+        
+        console.log(`✅ EFFL計算: 面${startSurf}〜${endSurf}, 波長${wavelength}μm = ${efl.toFixed(6)} mm`);
+        return efl;
+    }
+    
+    /**
+     * データを取得（Save用）
+     * @returns {Array} オペランドデータ配列
+     */
+    getData() {
+        return this.operands;
+    }
+    
+    /**
+     * 選択行のEvaluation Functionに基づいてパラメータカラムヘッダーを更新
+     */
+    updateParameterHeaders(rowData) {
+        const operand = rowData.operand;
+        const definition = OPERAND_DEFINITIONS[operand];
+        
+        console.log('🔄 Updating parameter headers for operand:', operand, definition);
+        
+        // operandがnullまたは定義されていない場合は全て「-」にする
+        if (!operand || !definition || !definition.parameters) {
+            const paramFields = ['param1', 'param2', 'param3', 'param4'];
+            paramFields.forEach((field) => {
+                const column = this.table.getColumn(field);
+                if (column) {
+                    const headerElement = column.getElement().querySelector('.tabulator-col-title');
+                    if (headerElement) {
+                        headerElement.textContent = '-';
+                        console.log(`  ✓ Set ${field} header to: -`);
+                    }
+                }
+            });
+            return;
+        }
+        
+        // パラメータカラムのヘッダーは parameters の順ではなく key でマッピングする
+        // （例: LCA/TCA は param2 のみを使う、など）
+        const paramFields = ['param1', 'param2', 'param3', 'param4'];
+
+        paramFields.forEach((field) => {
+            const column = this.table.getColumn(field);
+            if (!column) return;
+
+            const headerElement = column.getElement().querySelector('.tabulator-col-title');
+            if (!headerElement) return;
+
+            const paramDef = Array.isArray(definition.parameters)
+                ? definition.parameters.find(p => p && p.key === field)
+                : null;
+
+            if (paramDef && paramDef.label) {
+                headerElement.textContent = paramDef.label;
+                console.log(`  ✓ Set ${field} header to: ${paramDef.label}`);
+            } else {
+                headerElement.textContent = '-';
+                console.log(`  ✓ Set ${field} header to: -`);
+            }
+        });
+    }
+    
+    /**
+     * パラメータカラムヘッダーをデフォルトに戻す
+     */
+    resetParameterHeaders() {
+        const defaultTitles = {
+            param1: '-',
+            param2: '-',
+            param3: '-',
+            param4: '-'
+        };
+        
+        Object.entries(defaultTitles).forEach(([field, title]) => {
+            const column = this.table.getColumn(field);
+            if (column) {
+                const headerElement = column.getElement().querySelector('.tabulator-col-title');
+                if (headerElement) {
+                    headerElement.textContent = title;
+                }
+            }
+        });
+    }
+    
+    /**
+     * データを設定（Load用）
+     * @param {Array} data - オペランドデータ配列
+     */
+    setData(data) {
+        if (!Array.isArray(data)) {
+            console.warn('Merit Function setData: 無効なデータ形式');
+            return;
+        }
+
+        // Remove deprecated helper operands (requested to be deleted).
+        const dropDeprecated = (op) => {
+            const name = String(op?.operand ?? '').trim();
+            return name === 'ZERN_WL_UM' || name === 'ZERN_FIT_TERMS';
+        };
+
+        this.operands = data.filter(op => !dropDeprecated(op));
+        this.updateRowNumbers();
+        
+        if (this.table) {
+            this.table.setData(this.operands);
+        }
+        
+        console.log('✅ Merit Function データを読み込みました:', this.operands.length, '件');
+    }
+    
+    /**
+     * ローカルストレージから読み込み
+     */
+    loadFromStorage() {
+        try {
+            const savedData = localStorage.getItem('meritFunctionData');
+            if (savedData) {
+                const data = JSON.parse(savedData);
+
+                // Remove deprecated helper operands (requested to be deleted).
+                const dropDeprecated = (op) => {
+                    const name = String(op?.operand ?? '').trim();
+                    return name === 'ZERN_WL_UM' || name === 'ZERN_FIT_TERMS';
+                };
+                const sanitized = Array.isArray(data) ? data.filter(op => !dropDeprecated(op)) : [];
+                
+                // 既存データでconfigIdがない場合、アクティブなConfigにマイグレーション
+                let activeConfigId = "";
+                try {
+                    const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+                    if (systemConfig && systemConfig.activeConfigId) {
+                        activeConfigId = String(systemConfig.activeConfigId);
+                    }
+                } catch (e) {
+                    console.warn('Active config ID取得エラー:', e);
+                }
+                
+                this.operands = sanitized.map(operand => {
+                    // configIdを文字列に統一（undefinedまたはnullの場合はアクティブなConfigを設定）
+                    if (operand.configId === undefined || operand.configId === null) {
+                        return { ...operand, configId: activeConfigId };
+                    }
+                    // 既存の数値IDを文字列に変換
+                    return { ...operand, configId: String(operand.configId) };
+                });
+                
+                console.log('✅ Merit Function データをローカルストレージから読み込みました:', this.operands.length, '件');
+            }
+        } catch (error) {
+            console.error('❌ Merit Function ローカルストレージ読み込みエラー:', error);
+        }
+    }
+    
+    /**
+     * ローカルストレージに保存
+     */
+    saveToStorage() {
+        try {
+            localStorage.setItem('meritFunctionData', JSON.stringify(this.operands));
+            console.log('✅ Merit Function データをローカルストレージに保存しました:', this.operands.length, '件');
+        } catch (error) {
+            console.error('❌ Merit Function ローカルストレージ保存エラー:', error);
+        }
+    }
+    
+    /**
+     * Configuration リストを取得（ドロップダウン用）
+     */
+    getConfigurationList() {
+        try {
+            const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+            if (!systemConfig || !systemConfig.configurations) {
+                console.log('📋 Configuration リスト: デフォルト (Current のみ)');
+                return { "": 'Current' };
+            }
+            
+            // アクティブなConfigの名前を取得
+            const activeConfig = systemConfig.configurations.find(c => c.id === systemConfig.activeConfigId);
+            const activeConfigName = activeConfig ? activeConfig.name : '';
+            
+            const configList = { "": `Current (${activeConfigName})` };
+            systemConfig.configurations.forEach(config => {
+                configList[String(config.id)] = config.name;
+            });
+            
+            console.log('📋 Configuration リスト:', configList);
+            return configList;
+        } catch (error) {
+            console.error('Configuration リスト取得エラー:', error);
+            return { "": 'Current' };
+        }
+    }
+    
+    /**
+     * Config ID から Config 名を取得
+     */
+    getConfigName(configId) {
+        if (!configId && configId !== 0) {
+            // 空文字列の場合、現在のアクティブなConfig名を取得
+            try {
+                const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+                if (systemConfig && systemConfig.configurations) {
+                    const activeConfig = systemConfig.configurations.find(c => c.id === systemConfig.activeConfigId);
+                    if (activeConfig) {
+                        return `Current (${activeConfig.name})`;
+                    }
+                }
+            } catch (e) {
+                console.warn('Active config名取得エラー:', e);
+            }
+            return 'Current';
+        }
+        
+        try {
+            const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations'));
+            if (!systemConfig || !systemConfig.configurations) {
+                return 'Current';
+            }
+            
+            const config = systemConfig.configurations.find(c => String(c.id) === String(configId));
+            return config ? config.name : 'Current';
+        } catch (error) {
+            console.error('Config 名取得エラー:', error);
+            return 'Current';
+        }
+    }
+}
+
+// DOMContentLoaded時に初期化
+document.addEventListener('DOMContentLoaded', () => {
+    try {
+        window.meritFunctionEditor = new MeritFunctionEditor();
+        console.log('✅ Merit Function Editor initialized (Tabulator版)');
+
+        try {
+            if (typeof window !== 'undefined' && !window.__cooptLastSpotSizeDebug) {
+                window.__cooptLastSpotSizeDebug = {
+                    ok: false,
+                    reason: 'not-evaluated',
+                    targetSurfaceIndex: null,
+                    rayCountRequested: null,
+                    rayStartsGenerated: null,
+                    legacyFallbackHits: null,
+                    wavelength: null,
+                    fastModeEnabled: null,
+                    lastRayTraceFailure: null
+                };
+            }
+        } catch (_) {}
+    } catch (error) {
+        console.error('❌ Merit Function Editor初期化エラー:', error);
+    }
+});
+
+export { MeritFunctionEditor, OPERAND_DEFINITIONS };

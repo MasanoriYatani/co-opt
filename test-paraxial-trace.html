@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>近軸光線追跡 - 初期値確認</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 {
+            color: #4ec9b0;
+        }
+        pre {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 3px solid #007acc;
+            overflow-x: auto;
+        }
+        .result {
+            background: #264f78;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+        .theory {
+            background: #3e5c38;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 3px;
+        }
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #005a9e;
+        }
+    </style>
+</head>
+<body>
+    <h1>📐 アフォーカル光学系の近軸光線追跡と初期値確認</h1>
+    <button onclick="runParaxialTrace()">🚀 計算実行</button>
+    <pre id="output">コンソールを開いて「計算実行」ボタンをクリックしてください</pre>
+
+    <script type="module">
+        /**
+         * Stop面を通る角度を逆算する関数
+         */
+        function findAngleToPassThroughStop(opticalSystemRows, stopIndex, h0, targetH_stop) {
+            // 2分探索で角度を見つける
+            let alpha_min = -0.5;
+            let alpha_max = 0.5;
+            let iterations = 0;
+            const maxIterations = 50;
+            const tolerance = 1e-8;
+            
+            while (iterations < maxIterations) {
+                const alpha_mid = (alpha_min + alpha_max) / 2;
+                
+                // この角度で追跡
+                let h = h0;
+                let alpha = alpha_mid;
+                
+                for (let i = 1; i <= stopIndex; i++) {
+                    const surf = opticalSystemRows[i];
+                    const prevSurf = opticalSystemRows[i - 1];
+                    
+                    const thickness = parseFloat(prevSurf.thickness);
+                    const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                    const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                    
+                    const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                    const N_after = surf['object type'] === 'Stop' ? (parseFloat(surf.material) || 1.0) : (parseFloat(surf.material) || 1.0);
+                    
+                    // Transfer
+                    h = h + thickness * alpha;
+                    
+                    // Refraction
+                    if (i < stopIndex) {
+                        const phi = h * curvature;
+                        alpha = alpha + phi * (N_before - N_after) / N_after;
+                    }
+                }
+                
+                // Stop面での高さと目標の差
+                const diff = h - targetH_stop;
+                
+                if (Math.abs(diff) < tolerance) {
+                    return alpha_mid;
+                }
+                
+                if (diff > 0) {
+                    alpha_max = alpha_mid;
+                } else {
+                    alpha_min = alpha_mid;
+                }
+                
+                iterations++;
+            }
+            
+            return (alpha_min + alpha_max) / 2;
+        }
+        
+        /**
+         * 近軸光線追跡（主光線・子午光線）
+         */
+        window.runParaxialTrace = function() {
+            console.clear();
+            console.log('\n📐 ===== 近軸光線追跡開始 =====');
+            console.log('Table 1: テレセントリック結像系 (40mm = 1 unit)');
+            
+            // 光学系データ（Table 1: テレセントリック結像系）
+            const opticalSystemRows = [
+                {id: 0, 'object type': 'Object', surfType: 'Spherical', radius: 'INF', thickness: 127.39, semidia: 0, material: ''},
+                {id: 1, 'object type': '', surfType: 'Spherical', radius: 352.25, thickness: 6.3, semidia: 30, material: ''},
+                {id: 2, 'object type': '', surfType: 'Spherical', radius: -116.5, thickness: 0.6, semidia: 30, material: '1.603'},
+                {id: 3, 'object type': '', surfType: 'Spherical', radius: 45.87, thickness: 14.7, semidia: 30, material: '1.620'},
+                {id: 4, 'object type': '', surfType: 'Spherical', radius: 545, thickness: 21.1, semidia: 30, material: ''},
+                {id: 5, 'object type': '', surfType: 'Spherical', radius: -68.9, thickness: 6.3, semidia: 15, material: '1.616'},
+                {id: 6, 'object type': '', surfType: 'Spherical', radius: 33.95, thickness: 29.3, semidia: 15, material: ''},
+                {id: 7, 'object type': 'Stop', surfType: 'Spherical', radius: 72, thickness: 8, semidia: 5.5, material: '1.486'},
+                {id: 8, 'object type': '', surfType: 'Spherical', radius: -72, thickness: 29.3, semidia: 5.5, material: ''},
+                {id: 9, 'object type': '', surfType: 'Spherical', radius: -33.95, thickness: 6.3, semidia: 15, material: '1.616'},
+                {id: 10, 'object type': '', surfType: 'Spherical', radius: 68.9, thickness: 21.1, semidia: 15, material: ''},
+                {id: 11, 'object type': '', surfType: 'Spherical', radius: -545, thickness: 14.7, semidia: 30, material: '1.620'},
+                {id: 12, 'object type': '', surfType: 'Spherical', radius: -45.87, thickness: 0.6, semidia: 30, material: ''},
+                {id: 13, 'object type': '', surfType: 'Spherical', radius: 116.5, thickness: 6.3, semidia: 30, material: '1.603'},
+                {id: 14, 'object type': '', surfType: 'Spherical', radius: -352.25, thickness: 127.39, semidia: 30, material: ''},
+                {id: 15, 'object type': 'Image', surfType: 'Spherical', radius: 'INF', thickness: 0, semidia: 0, material: ''}
+            ];
+            console.log(`📊 光学系データ: ${opticalSystemRows.length} 面`);
+            
+            // Stop面を探す
+            let stopIndex = -1;
+            for (let i = 0; i < opticalSystemRows.length; i++) {
+                if (opticalSystemRows[i]['object type'] === 'Stop') {
+                    stopIndex = i;
+                    break;
+                }
+            }
+            console.log(`🎯 Stop面: Surface ${stopIndex} (0-indexed)`);
+            
+            // 初期物体高さ (アフォーカル系では最大画面サイズを1とする)
+            const y1 = 1.0;
+            console.log(`📏 初期物体高さ y1 = ${y1}`);
+            
+            // 主光線の初期値
+            let alpha = 0;  // 角度
+            let h = y1;     // 高さ
+            
+            // 第1面のデータ
+            const surf0 = opticalSystemRows[0];
+            const surf1 = opticalSystemRows[1];
+            
+            const N0 = 1.0;  // Object space
+            const N1 = parseFloat(surf1.material) || 1.0;
+            const r1 = surf1.radius === 'INF' ? Infinity : parseFloat(surf1.radius);
+            const c1 = r1 === Infinity ? 0 : 1.0 / r1;
+            const d0 = parseFloat(surf0.thickness);  // Object面の厚さ
+            
+            console.log(`\nSurface 0 (Object): thickness = ${d0} mm`);
+            console.log(`Surface 1: radius = ${r1} mm, material N = ${N1}, curvature c = ${c1.toFixed(6)} mm⁻¹`);
+            
+            // 物体距離 (第1面から見た)
+            const s1 = -d0;
+            console.log(`物体距離 s1 = ${s1} mm (第1面基準)`);
+            
+            // 主光線の近軸追跡
+            console.log('\n🔵 主光線 (Chief Ray) 追跡:');
+            console.log('═'.repeat(100));
+            
+            const chiefResults = [];
+            alpha = 0;  // 初期角度（Stop面で h=0 を目指す）
+            h = y1;
+            
+            for (let i = 1; i < opticalSystemRows.length; i++) {
+                const surf = opticalSystemRows[i];
+                const prevSurf = opticalSystemRows[i - 1];
+                
+                const thickness = parseFloat(prevSurf.thickness);
+                const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                
+                // 屈折率
+                const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                const N_after = surf['object type'] === 'Image' ? 1.0 : (parseFloat(surf.material) || 1.0);
+                
+                // Transfer: 前の面から今の面まで伝播
+                const h_new = h + thickness * alpha;
+                
+                // Refraction: この面で屈折
+                const phi = h_new * curvature;
+                const alpha_new = alpha + phi * (N_before - N_after) / N_after;
+                
+                chiefResults.push({
+                    surface: i,
+                    surfType: surf.surfType || 'Spherical',
+                    objectType: surf['object type'] || '',
+                    h: h_new,
+                    alpha: alpha_new,
+                    thickness: thickness,
+                    radius: radius,
+                    N_before: N_before,
+                    N_after: N_after
+                });
+                
+                h = h_new;
+                alpha = alpha_new;
+                
+                if (i === stopIndex) {
+                    console.log(`⭐ Stop面 (Surface ${i}): h = ${h.toFixed(6)} mm, α = ${alpha.toFixed(6)} rad`);
+                }
+            }
+            
+            // 結果表示
+            console.log('\n📊 主光線追跡結果テーブル:');
+            console.table(chiefResults.map(r => ({
+                'Surface': r.objectType ? `${r.surface} (${r.objectType})` : r.surface,
+                'Type': r.surfType,
+                'h (mm)': r.h.toFixed(6),
+                'α (rad)': r.alpha.toFixed(8),
+                'r (mm)': r.radius === Infinity ? 'INF' : r.radius.toFixed(2),
+                'N_in': r.N_before.toFixed(3),
+                'N_out': r.N_after.toFixed(3)
+            })));
+            
+            // 第1面通過後の値
+            const alpha1 = chiefResults[0].alpha;
+            const h1 = chiefResults[0].h;
+            
+            console.log(`\n✅ 主光線 - 第1面通過後の値:`);
+            console.log(`   α1 = ${alpha1.toFixed(8)} rad`);
+            console.log(`   h1 = ${h1.toFixed(6)} mm`);
+            
+            // 最終値（Image面）
+            const chiefFinal = chiefResults[chiefResults.length - 1];
+            console.log(`\n✅ 主光線 - 最終値 (Image面):`);
+            console.log(`   h_final = ${chiefFinal.h.toFixed(6)} mm`);
+            console.log(`   α_final = ${chiefFinal.alpha.toFixed(8)} rad`);
+            
+            // 子午光線の追跡
+            console.log('\n🔴 子午光線 (Marginal Ray) 追跡:');
+            console.log('═'.repeat(100));
+            
+            // Stop面の開口半径
+            const stopSurf = opticalSystemRows[stopIndex];
+            const stopRadius = parseFloat(stopSurf.semidia) || 5.5;
+            console.log(`Stop面の半径: ${stopRadius} mm`);
+            
+            // Object面からStop面までの距離
+            let distanceToStop = 0;
+            for (let i = 0; i < stopIndex; i++) {
+                distanceToStop += parseFloat(opticalSystemRows[i].thickness);
+            }
+            console.log(`Object面からStop面までの距離: ${distanceToStop} mm`);
+            
+            // 子午光線の初期角度: 軸上から出てStop面の端を通る
+            let alpha_bar = stopRadius / distanceToStop;
+            let h_bar = 0;
+            
+            console.log(`初期角度 ᾱ_initial = ${alpha_bar.toFixed(8)} rad`);
+            
+            const marginalResults = [];
+            
+            for (let i = 1; i < opticalSystemRows.length; i++) {
+                const surf = opticalSystemRows[i];
+                const prevSurf = opticalSystemRows[i - 1];
+                
+                const thickness = parseFloat(prevSurf.thickness);
+                const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                
+                const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                const N_after = surf['object type'] === 'Image' ? 1.0 : (parseFloat(surf.material) || 1.0);
+                
+                const h_bar_new = h_bar + thickness * alpha_bar;
+                const phi_bar = h_bar_new * curvature;
+                const alpha_bar_new = alpha_bar + phi_bar * (N_before - N_after) / N_after;
+                
+                marginalResults.push({
+                    surface: i,
+                    surfType: surf.surfType || 'Spherical',
+                    objectType: surf['object type'] || '',
+                    h_bar: h_bar_new,
+                    alpha_bar: alpha_bar_new,
+                    radius: radius,
+                    N_before: N_before,
+                    N_after: N_after
+                });
+                
+                h_bar = h_bar_new;
+                alpha_bar = alpha_bar_new;
+                
+                if (i === stopIndex) {
+                    console.log(`⭐ Stop面 (Surface ${i}): h̄ = ${h_bar.toFixed(6)} mm, ᾱ = ${alpha_bar.toFixed(8)} rad`);
+                }
+            }
+            
+            // 結果表示
+            console.log('\n📊 子午光線追跡結果テーブル:');
+            console.table(marginalResults.map(r => ({
+                'Surface': r.objectType ? `${r.surface} (${r.objectType})` : r.surface,
+                'Type': r.surfType,
+                'h̄ (mm)': r.h_bar.toFixed(6),
+                'ᾱ (rad)': r.alpha_bar.toFixed(8),
+                'r (mm)': r.radius === Infinity ? 'INF' : r.radius.toFixed(2),
+                'N_in': r.N_before.toFixed(3),
+                'N_out': r.N_after.toFixed(3)
+            })));
+            
+            // 第1面通過後の値
+            const alpha1_bar = marginalResults[0].alpha_bar;
+            const h1_bar = marginalResults[0].h_bar;
+            
+            console.log(`\n✅ 子午光線 - 第1面通過後の値:`);
+            console.log(`   ᾱ1 = ${alpha1_bar.toFixed(8)} rad`);
+            console.log(`   h̄1 = ${h1_bar.toFixed(6)} mm`);
+            
+            // 最終値
+            const marginalFinal = marginalResults[marginalResults.length - 1];
+            console.log(`\n✅ 子午光線 - 最終値 (Image面):`);
+            console.log(`   h̄_final = ${marginalFinal.h_bar.toFixed(6)} mm`);
+            console.log(`   ᾱ_final = ${marginalFinal.alpha_bar.toFixed(8)} rad`);
+            
+            // アフォーカル系のパラメータ計算
+            console.log('\n📐 アフォーカル系パラメータ計算:');
+            console.log('═'.repeat(100));
+            
+            // 横倍率 β
+            const beta = chiefFinal.h / y1;
+            console.log(`横倍率 β = h_final / y1 = ${chiefFinal.h.toFixed(6)} / ${y1} = ${beta.toFixed(6)}`);
+            
+            // γ パラメータ (理論: β = 1/γ)
+            const gamma = 1.0 / beta;
+            console.log(`γ = 1/β = ${gamma.toFixed(6)}`);
+            
+            // 理論値計算
+            console.log('\n📊 理論値との比較:');
+            console.log('═'.repeat(100));
+            console.log('アフォーカル系理論公式:');
+            console.log('  ・α1 = β = 1/γ');
+            console.log('  ・h1 = (s1/N1) × β = (s1/N1) × (1/γ)');
+            console.log('  ・ᾱ1 = 0');
+            console.log('  ・h̄1 = 1/β = γ');
+            
+            const alpha1_theory = beta;  // = 1/γ
+            const h1_theory = (s1 / N1) * beta;
+            const alpha1_bar_theory = 0;
+            const h1_bar_theory = gamma;  // = 1/β
+            
+            console.log(`\n📘 理論値 (公式から):`);
+            console.log(`  α1_theory  = β = ${alpha1_theory.toFixed(8)} rad`);
+            console.log(`  h1_theory  = (s1/N1)×β = (${s1}/${N1})×${beta.toFixed(6)} = ${h1_theory.toFixed(6)} mm`);
+            console.log(`  ᾱ1_theory  = 0 rad`);
+            console.log(`  h̄1_theory  = γ = ${h1_bar_theory.toFixed(6)} mm`);
+            
+            console.log(`\n📗 実測値 (近軸光線追跡):`);
+            console.log(`  α1_actual  = ${alpha1.toFixed(8)} rad`);
+            console.log(`  h1_actual  = ${h1.toFixed(6)} mm`);
+            console.log(`  ᾱ1_actual  = ${alpha1_bar.toFixed(8)} rad`);
+            console.log(`  h̄1_actual  = ${h1_bar.toFixed(6)} mm`);
+            
+            console.log(`\n📊 誤差:`);
+            console.log(`  Δα1 = ${Math.abs(alpha1 - alpha1_theory).toExponential(3)}`);
+            console.log(`  Δh1 = ${Math.abs(h1 - h1_theory).toFixed(6)} mm`);
+            console.log(`  Δᾱ1 = ${Math.abs(alpha1_bar - alpha1_bar_theory).toExponential(3)}`);
+            console.log(`  Δh̄1 = ${Math.abs(h1_bar - h1_bar_theory).toFixed(6)} mm`);
+            
+            // 光学系の特性
+            console.log('\n📐 光学系の特性:');
+            console.log(`  s1 (物体距離) = ${s1} mm`);
+            console.log(`  N1 (第1面後の屈折率) = ${N1}`);
+            console.log(`  β (横倍率) = ${beta.toFixed(6)}`);
+            console.log(`  γ (パラメータ) = ${gamma.toFixed(6)}`);
+            
+            console.log('\n✅ 計算完了');
+            
+            // HTML出力
+            const output = document.getElementById('output');
+            output.innerHTML = `
+📐 アフォーカル光学系 近軸光線追跡結果
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📘 理論値 (アフォーカル系公式):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  α1_theory  = β = ${alpha1_theory.toFixed(8)} rad
+  h1_theory  = (s1/N1)×β = ${h1_theory.toFixed(6)} mm
+  ᾱ1_theory  = 0.00000000 rad
+  h̄1_theory  = γ = ${h1_bar_theory.toFixed(6)} mm
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📗 実測値 (近軸光線追跡):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  α1_actual  = ${alpha1.toFixed(8)} rad
+  h1_actual  = ${h1.toFixed(6)} mm
+  ᾱ1_actual  = ${alpha1_bar.toFixed(8)} rad
+  h̄1_actual  = ${h1_bar.toFixed(6)} mm
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 誤差:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Δα1 = ${Math.abs(alpha1 - alpha1_theory).toExponential(3)}
+  Δh1 = ${Math.abs(h1 - h1_theory).toFixed(6)} mm
+  Δᾱ1 = ${Math.abs(alpha1_bar - alpha1_bar_theory).toExponential(3)}
+  Δh̄1 = ${Math.abs(h1_bar - h1_bar_theory).toFixed(6)} mm
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📐 光学系パラメータ:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  s1 (物体距離)         = ${s1} mm
+  N1 (第1面後屈折率)    = ${N1}
+  β (横倍率)            = ${beta.toFixed(6)}
+  γ (パラメータ)        = ${gamma.toFixed(6)}
+
+詳細はコンソール (F12) を確認してください
+            `;
+        };
+    </script>
+</body>
+</html>
