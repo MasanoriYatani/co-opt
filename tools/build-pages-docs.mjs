@@ -119,8 +119,14 @@ function findLocalRefsInJs(code) {
 }
 
 function resolveFrom(fromFileAbs, ref) {
-  const baseDir = path.dirname(fromFileAbs);
-  return path.resolve(baseDir, ref);
+  const r = String(ref);
+  // For fetch()/Worker()/asset URLs, relative paths are resolved against the document base URL
+  // (project root when deployed). Treat non-dot paths like "defaults/x.json" as root-relative.
+  if (r.startsWith('./') || r.startsWith('../')) {
+    const baseDir = path.dirname(fromFileAbs);
+    return path.resolve(baseDir, r);
+  }
+  return path.resolve(projectRoot, r);
 }
 
 function toProjectRel(absPath) {
