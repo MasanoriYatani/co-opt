@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Show Spot Diagram テスト</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body>
+    <h1>スポットダイアグラム表示テスト</h1>
+    <button onclick="testSpotDiagram()">スポットダイアグラムを表示</button>
+    <div id="spot-diagram-container" style="width: 100%; height: 600px; border: 1px solid #ccc;"></div>
+
+    <script type="module">
+        // グローバル関数として公開
+        window.testSpotDiagram = async function() {
+            console.log('🎯 testSpotDiagram 開始');
+            try {
+                const { showSpotDiagram } = await import('./analysis/optical-analysis.js');
+                console.log('✅ showSpotDiagram をインポート');
+                
+                console.log('🔄 showSpotDiagram() 実行中...');
+                await showSpotDiagram();
+                console.log('✅ showSpotDiagram() 完了');
+            } catch (error) {
+                console.error('❌ エラー:', error);
+                console.error('スタックトレース:', error.stack);
+                alert(`エラー: ${error.message}`);
+            }
+        };
+        
+        console.log('✅ testSpotDiagram がグローバルに登録されました');
+    </script>
+</body>
+</html>

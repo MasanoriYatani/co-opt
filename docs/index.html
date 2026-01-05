@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>co-opt</title>
+  <!-- SVG favicon for modern browsers -->
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <!-- Fallback for Safari and older browsers -->
+  <link rel="icon" type="image/png" sizes="32x32" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%231a4d8f' rx='4'/><text x='16' y='22' font-family='Arial, sans-serif' font-size='18' font-weight='bold' fill='%23ffffff' text-anchor='middle'>CO</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+  <!-- TabulatorのCSSとJSを追加 -->
+  <link href="https://unpkg.com/tabulator-tables@6.2.5/dist/css/tabulator.min.css" rel="stylesheet">
+  <script src="https://unpkg.com/tabulator-tables@6.2.5/dist/js/tabulator.min.js"></script>
+  
+  <!-- Plotly.js最新版を追加 -->
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  
+  <!-- WASM Module (V3 with memory management) -->
+  <script src="ray-tracing-wasm-v3.js?v=20260103a"></script>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.138.0/build/three.module.js",
+        "OrbitControls": "https://unpkg.com/three@0.138.0/examples/jsm/controls/OrbitControls.js"
+      }
+    }
+  </script>
+
+  <!-- Debug localStorage on page load -->
+  <script>
+    console.log('🔵 [PageLoad] Initial localStorage state:');
+    console.log('🔵 [PageLoad] sourceTableData:', !!localStorage.getItem('sourceTableData'));
+    console.log('🔵 [PageLoad] objectTableData:', !!localStorage.getItem('objectTableData'));
+    console.log('🔵 [PageLoad] OpticalSystemTableData:', !!localStorage.getItem('OpticalSystemTableData'));
+    console.log('🔵 [PageLoad] meritFunctionData:', !!localStorage.getItem('meritFunctionData'));
+    console.log('🔵 [PageLoad] Total localStorage keys:', Object.keys(localStorage).length);
+    console.log('🔵 [PageLoad] All keys:', Object.keys(localStorage));
+  </script>
+
+</head>
+<body>
+
+  <!-- LOAD SAVE --> 
+  <div class="top-buttons-container">
+    <div class="top-file-row" id="loaded-file-display">
+      <span class="top-file-icon">📁</span>
+      <span id="loaded-file-name" class="top-file-name">No file loaded</span>
+    </div>
+    <div class="top-buttons-row">
+      <button id="save-all-btn">Save</button>
+      <button id="load-all-btn">Load</button>
+      <button id="clear-storage-btn">Clear Storage</button>
+      <button id="open-3d-window-btn" title="Render 3D view in popup window">Render</button>
+      <button id="open-system-data-window-btn" title="Open System Data in popup window">System Data</button>
+      <button id="open-spot-diagram-window-btn" title="Open Spot Diagram in popup window">Spot Diagram</button>
+      <button id="open-spherical-aberration-window-btn" title="Open Spherical Aberration in popup window">Spherical Aberration</button>
+      <button id="open-astigmatism-window-btn" title="Open Astigmatism in popup window">Astigmatism</button>
+      <button id="open-distortion-window-btn" title="Open Distortion in popup window">Distortion</button>
+      <button id="open-integrated-aberration-window-btn" title="Open Integrated Aberration in popup window">Integrated Aberration</button>
+      <button id="open-transverse-aberration-window-btn" title="Open Transverse Aberration in popup window">Transverse Aberration</button>
+      <button id="open-opd-window-btn" title="Open Optical Path Difference in popup window">Optical Path Difference</button>
+      <button id="open-psf-window-btn" title="Open Point Spread Function in popup window">Point Spread Function</button>
+    </div>
+
+    <!-- Suggest / Optimize (Design Intent workflow) -->
+    <div class="top-buttons-row">
+      <button id="optimize-design-intent-btn" title="Optimize marked variables (V) to satisfy System Requirements (all scenarios).">Optimize</button>
+    </div>
+  </div>
+
+  <!-- System Configuration Section -->
+  <div class="configuration-section">
+    <h2>System Configuration</h2>
+    <div class="configuration-controls">
+      <select id="config-select"></select>
+      <button id="add-config-btn">➕ Add</button>
+      <button id="delete-config-btn">🗑️ Delete</button>
+      <button id="duplicate-config-btn">📋 Duplicate</button>
+      <button id="rename-config-btn">✏️ Rename</button>
+    </div>
+    <div id="config-info" class="config-info"></div>
+  </div>
+
+  <!-- Source と Object を横並びにするコンテナ -->
+  <div class="source-object-container">
+    <div class="source-section">
+      <h2>Source</h2>
+      <button id="add-source-btn">Add Source</button>
+      <button id="delete-source-btn">Del Source</button>
+      <div id="table-source"></div>
+    </div>
+
+    <div class="object-section">
+      <h2>Object</h2>
+      <button id="add-object-btn">Add Object</button>
+      <button id="delete-object-btn">Del Object</button>
+      <button id="object-angle-btn">Angle</button>
+      <!-- <button id="object-height-circle-btn">Height Circle</button> -->
+      <button id="object-height-rect-btn">Height Rect</button>
+      <div id ="table-object"></div>
+    </div>
+  </div>
+
+  <div class="optical-system-section">
+    <h2>Design Intent (Blocks)</h2>
+    <div class="merit-function-help">
+      <strong>Note:</strong> High-level structure that defines the optical design.<br>
+      Expanded below into editable surfaces.
+    </div>
+
+    <div id="design-intent-toolbar" class="optical-system-buttons-container">
+      <select id="design-intent-add-block-type">
+        <option value="ObjectPlane">ObjectPlane</option>
+        <option value="Lens">Lens</option>
+        <option value="Doublet">Doublet</option>
+        <option value="Triplet">Triplet</option>
+        <option value="AirGap">AirGap</option>
+        <option value="Stop">Stop</option>
+        <option value="ImagePlane">ImagePlane</option>
+      </select>
+      <button id="design-intent-add-block-btn">Add</button>
+      <button id="design-intent-delete-block-btn">Delete</button>
+      <button id="suggest-design-intent-btn" title="Find similar glass / suggest design intent.">Find Glass</button>
+    </div>
+
+    <div id="import-analyze-mode-banner" class="merit-function-help" style="display: none;">
+      <strong>Import / Analyze Mode</strong><br>
+      Imported optical systems are analyzed as surfaces.<br>
+      （読み込み済み光学系は Surface として解析されます）<br>
+      Design Intent (Blocks) is partial or unavailable.<br>
+      （Design Intent（Blocks）は部分的、または利用できません）<br><br>
+
+      This optical system contains elements that cannot be represented as design blocks (e.g. cemented lenses).<br>
+      （Blocks に表現できない要素を含みます：例：セメント接合レンズ）<br><br>
+
+      You can analyze and edit surfaces, but the design intent is not fully available.<br>
+      （Surface の解析・編集は可能ですが、設計意図は完全には利用できません）
+    </div>
+    <div class="block-inspector-panel">
+      <div id="block-inspector" class="block-inspector"></div>
+    </div>
+
+    <div class="expanded-optical-system-header">
+      <h2 class="optical-system-title">Expanded Optical System (from Blocks)</h2>
+      <button id="toggle-expanded-optical-system-btn" aria-expanded="true">Collapse</button>
+    </div>
+    <div id="expanded-optical-system-content">
+      <div class="optical-system-buttons-container">
+        <button id="add-optical-system-btn">Add Surf</button>
+        <button id="delete-optical-system-row-btn">Del Surf</button>
+        <button id="apply-to-design-intent-btn">Apply to Design Intent</button>
+        <button id="find-glass-btn">🔍 Find Glass</button>
+      </div>
+
+      <!-- Step2: Evaluation → Apply reason (read-only). Shown after cell select/edit, before Apply. -->
+      <div id="apply-reason-section" class="apply-reason-section" style="display: none;">
+        <div class="apply-reason-title">適用理由（参照用 / 読み取り専用）</div>
+        <div class="apply-reason-help">
+          セルを選択または編集すると、対象 Block（_blockId）に対する最新の評価要約（LCA/TCA 寄与）が表示されます。
+          ※評価は「Aberration Coefficients」実行時に更新されます。
+        </div>
+        <textarea id="apply-reason-text" rows="6" cols="100" readonly placeholder="ここに適用理由（評価要約）が表示されます…"></textarea>
+      </div>
+
+      <div class="optical-system-divider"></div>
+
+      <div id="table-optical-system"></div>
+    </div>
+  </div>
+
+  <!-- System Requirements Section -->
+  <div class="merit-function-section">
+    <h2>System Requirements</h2>
+
+    <div class="merit-function-help">
+      <strong>Note:</strong> Requirements が仕様（合否）です。全シナリオ合格が前提です。
+    </div>
+
+    <div class="merit-function-buttons-container">
+      <button id="add-requirement-btn">Add Requirement</button>
+      <button id="delete-requirement-btn">Del Requirement</button>
+      <button id="update-requirement-btn">Update Requirement</button>
+    </div>
+
+    <div id="table-system-requirements"></div>
+
+    <div id="requirement-inspector" class="operand-inspector" style="display: none;">
+      <h3>Requirement Detail / Inspector</h3>
+      <div id="requirement-inspector-content"></div>
+    </div>
+  </div>
+
+  <!-- System Evaluation Section (deprecated; kept for internal engine compatibility) -->
+  <div class="merit-function-section" style="display:none;">
+    <h2>System Evaluation</h2>
+    <div class="merit-function-help">
+      <strong>Note:</strong> This evaluation encodes design intent. Optimization is optional and always explicit.
+      <br>
+      <strong>Terminology / 用語:</strong>
+      Target = requirement value（要求値／目標の数字）, Weight = scoring weight（評価の重み／採点上の重要度）.
+    </div>
+    <div class="merit-function-buttons-container">
+      <button id="add-operand-btn">Add Term</button>
+      <button id="delete-operand-btn">Del Term</button>
+      <button id="calculate-merit-btn">Calculate Evaluation</button>
+    </div>
+    <div id="table-merit-function"></div>
+    <div class="merit-summary">
+      <strong>System Requirements Score:</strong> <span id="total-merit-value">0.000</span>
+    </div>
+    <div id="operand-inspector" class="operand-inspector" style="display: none;">
+      <h3>Evaluation Detail / Inspector</h3>
+      <div id="inspector-content"></div>
+    </div>
+
+    <div id="block-contribution-section" class="block-contribution-section" style="display: none;">
+      <h3>Block Contribution Summary</h3>
+      <div class="merit-function-help">
+        <strong>Note:</strong> Updated when running “Aberration Coefficients”. Aggregated by expanded-row provenance (_blockId).
+      </div>
+      <textarea id="block-contribution-summary" rows="10" cols="100" readonly placeholder="Block contribution summary will appear here..."></textarea>
+    </div>
+  </div>
+
+  <!-- System Dataセクション -->
+  <div class="system-section" style="display:none;">
+    <h2>System Data</h2>
+    <div class="system-controls">
+      <button id="calculate-paraxial-btn">Calculate Paraxial</button>
+      <button id="calculate-seidel-btn">Aberration Coefficients</button>
+      <button id="calculate-seidel-afocal-btn">Aberration Coefficients (Afocal)</button>
+      <label for="reference-focal-length">Reference Focal Length:</label>
+      <input type="text" id="reference-focal-length" placeholder="Auto" style="width: 80px;">
+      <button id="coord-transform-btn">Coord Transform</button>
+    </div>
+    <textarea id="system-data" rows="15" cols="100" placeholder="System information will appear here..."></textarea>
+  </div>
+
+  <!-- 3D描画コンテナ -->
+  <div class="draw-system-container">
+    <div class="draw-section">
+      <!-- Spot diagram section -->
+      <div class="spot-diagram-section" style="display:none;">
+        <h2>Spot Diagram</h2>
+        <div class="spot-diagram-controls">
+          <label for="spot-diagram-config-select">Config:</label>
+          <select id="spot-diagram-config-select"></select>
+
+          <label for="surface-number-select">Surface number:</label>
+          <select id="surface-number-select">
+            <option value="">Select surface...</option>
+          </select>
+          <label for="ray-count-input">Ray number:</label>
+          <input type="number" id="ray-count-input" value="501" min="1" max="10001" step="1">
+          <label for="ring-count-select">Ring count:</label>
+          <select id="ring-count-select">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10" selected>10</option>
+            <option value="12">12</option>
+            <option value="15">15</option>
+            <option value="16">16</option>
+            <option value="20">20</option>
+            <option value="24">24</option>
+            <option value="32">32</option>
+          </select>
+          <span class="ray-count-note ring-count-note">(Limited by available rays)</span>
+          
+          <!-- 光線パターン選択 -->
+          <div class="ray-pattern-controls">
+            <label>Ray pattern:</label>
+            <button id="annular-pattern-btn" class="pattern-btn active">Annular</button>
+            <button id="grid-pattern-btn" class="pattern-btn">Rectangle</button>
+          </div>
+          
+          <button id="show-spot-diagram-btn" title="Generate spot diagram for the selected surface">Show spot diagram</button>
+        </div>
+        <div class="spot-diagram-help">
+          <strong>Note:</strong> 
+          • Select a surface where rays can reach (usually Image surface or earlier)
+          • If you get "rays not reaching surface" error, try selecting an earlier surface
+          • Higher ray count provides better accuracy but takes longer to compute
+        </div>
+        <div id="spot-diagram-container"></div>
+      </div>
+      
+      <!-- Spherical Aberration diagram section -->
+      <div class="longitudinal-aberration-section" style="display:none;">
+        <h2>Spherical Aberration Diagram</h2>
+        <div class="longitudinal-aberration-help">
+          <strong>Note:</strong> Spherical aberration shows the axial displacement of focus along the optical axis (X-axis: longitudinal aberration, Y-axis: normalized pupil coordinate).
+        </div>
+        <div class="longitudinal-aberration-controls">
+          <label for="longitudinal-ray-count-input">Ray number:</label>
+          <input type="number" id="longitudinal-ray-count-input" value="20" min="1" max="1001" step="1">
+          <span class="note">(Always normalized by stop diameter)</span>
+          <button id="show-longitudinal-aberration-diagram-btn">Show spherical aberration diagram</button>
+        </div>
+        <div id="longitudinal-aberration-container"></div>
+      </div>
+      
+      <!-- Transverse Aberration diagram section -->
+      <div class="transverse-aberration-section" style="display:none;">
+        <h2>Transverse Aberration Diagram</h2>
+        <div class="transverse-aberration-controls">
+          <label for="transverse-ray-count-input">Ray number:</label>
+          <input type="number" id="transverse-ray-count-input" value="101" min="1" max="1001" step="1">
+          <span class="note">(Always normalized by stop diameter)</span>
+          <button id="show-transverse-aberration-diagram-btn">Show transverse aberration diagram</button>
+        </div>
+        <div id="transverse-aberration-container"></div>
+      </div>
+      
+      <!-- Astigmatism diagram section -->
+      <div class="astigmatism-section" style="display:none;">
+        <h2>Astigmatism Diagram</h2>
+        <div class="astigmatism-help">
+          <strong>Note:</strong> Astigmatism diagram shows the sagittal and tangential focal positions across different field angles.
+        </div>
+        <div class="astigmatism-controls">
+          <button id="show-astigmatism-diagram-btn">Show astigmatism diagram</button>
+        </div>
+        <div id="astigmatism-container"></div>
+        <div id="astigmatic-field-curves-container"></div>
+      </div>
+      
+      <!-- Distortion diagram section -->
+      <div class="distortion-section" style="display:none;">
+        <h2>Distortion Diagram</h2>
+        <div class="distortion-help">
+          <strong>Note:</strong> Distortion shows the deviation of real image height from ideal (paraxial) image height.
+          Field angles are automatically detected from Object table.
+        </div>
+        <div class="distortion-controls">
+          <button id="show-distortion-diagram-btn">Show distortion diagram</button>
+          <label for="grid-size-select" style="margin-left: 20px;">Grid Size:</label>
+          <select id="grid-size-select">
+            <option value="10">10×10</option>
+            <option value="15">15×15</option>
+            <option value="20" selected>20×20</option>
+            <option value="25">25×25</option>
+            <option value="30">30×30</option>
+            <option value="35">35×35</option>
+            <option value="40">40×40</option>
+            <option value="45">45×45</option>
+            <option value="50">50×50</option>
+          </select>
+          <button id="show-distortion-grid-btn">Show grid distortion</button>
+        </div>
+        <div id="distortion-percent"></div>
+        <div id="distortion-grid"></div>
+      </div>
+      
+      <!-- Integrated Aberration Diagram section -->
+      <section class="diagram-section" style="display:none;">
+        <h2>Integrated Aberration Diagram</h2>
+        <div class="distortion-help">
+          <strong>Note:</strong> This diagram combines Spherical Aberration, Astigmatic Field Curves, and Distortion in one view.
+        </div>
+        <div class="distortion-controls">
+          <button id="show-integrated-aberration-btn">Show integrated aberration diagram</button>
+        </div>
+      </section>
+      
+            <!-- Optical Path Difference diagram section -->
+          <div class="wavefront-aberration-section" style="display:none;">
+        <h2>Optical Path Difference</h2>
+        <div class="wavefront-aberration-controls">
+          <label for="wavefront-object-select">Object:</label>
+          <select id="wavefront-object-select">
+            <option value="0">Object 1</option>
+            <option value="1">Object 2</option>
+            <option value="2">Object 3</option>
+            <option value="3">Object 4</option>
+            <option value="4">Object 5</option>
+          </select>
+          <label for="wavefront-plot-type-select">Plot type:</label>
+          <select id="wavefront-plot-type-select">
+            <option value="surface">3D Surface</option>
+            <option value="heatmap">Heatmap</option>
+            <option value="multifield">Multi-field Comparison</option>
+          </select>
+          <label for="wavefront-grid-size-select">Grid size:</label>
+          <select id="wavefront-grid-size-select">
+            <option value="16">16x16</option>
+            <option value="32">32x32</option>
+            <option value="64" selected>64x64</option>
+            <option value="128">128x128</option>
+            <option value="256">256x256</option>
+          </select>
+          <button id="show-wavefront-diagram-btn">Show wavefront diagram</button>
+          <button id="stop-opd-btn" type="button" disabled>Stop</button>
+          <button id="draw-wavefront-rays-btn">Draw OPD Rays</button>
+          <button id="clear-wavefront-rays-btn">Clear OPD Rays</button>
+          <button id="zernike-fit-btn">Zernike Fit</button>
+        </div>
+        <div id="opd-progress" style="margin: 8px 0; font-size: 13px; color: #666;"></div>
+        <div id="wavefront-container"></div>
+        <div id="wavefront-container-stats"></div>
+      </div>
+      
+      <!-- PSF diagram section -->
+      <div class="psf-section" style="display:none;">
+        <h2>Point Spread Function</h2>
+        <div class="psf-controls">
+          <label for="psf-object-select">Object:</label>
+          <select id="psf-object-select">
+            <option value="0">Object 1</option>
+          </select>
+          <label for="psf-sampling-select">Sampling:</label>
+          <select id="psf-sampling-select">
+            <option value="32">32x32</option>
+            <option value="64" selected>64x64</option>
+            <option value="128">128x128</option>
+            <option value="256">256x256</option>
+            <option value="512">512x512</option>
+            <option value="1024">1024x1024</option>
+            <option value="2048">2048x2048</option>
+            <option value="4096">4096x4096</option>
+          </select>
+          <label for="psf-zernike-sampling-select">Fit grid:</label>
+          <select id="psf-zernike-sampling-select" title="Ray-traced OPD grid size used for Zernike fitting before evaluating PSF">
+            <option value="32">32x32</option>
+            <option value="64" selected>64x64</option>
+            <option value="128">128x128</option>
+            <option value="256">256x256</option>
+            <option value="512">512x512</option>
+            <option value="1024">1024x1024</option>
+            <option value="2048">2048x2048</option>
+            <option value="4096">4096x4096</option>
+          </select>
+          <label>
+            <input type="checkbox" id="psf-log-scale-checkbox" checked>
+            Log scale
+          </label>
+          <label for="psf-performance-select">Calculator:</label>
+          <select id="psf-performance-select">
+            <option value="auto" selected>Auto (WASM preferred)</option>
+            <option value="wasm">Force WASM</option>
+            <option value="javascript">Force JavaScript</option>
+          </select>
+          <button id="show-psf-btn" title="Calculate and display PSF from OPD data">Show PSF</button>
+          <button id="stop-psf-btn" title="Stop the current PSF calculation" disabled>Stop</button>
+        </div>
+        <div class="psf-help" style="font-size: 12px; color: #666; margin: 10px 0;">
+          <strong>Note:</strong> PSF is calculated from OPD data using Fourier transform. Generate OPD data first using the Optical Path Difference section above.
+        </div>
+        <div id="psf-container"></div>
+        <div id="psf-container-stats"></div>
+        <div id="psf-benchmark-results" style="margin-top: 10px; padding: 10px; border: 1px solid #ddd; border-radius: 5px; display: none;">
+          <h4>Benchmark Results</h4>
+          <div id="psf-benchmark-details"></div>
+        </div>
+      </div>
+      
+      <!-- Ray visualization controls -->
+      
+    </div>
+  </div>
+
+  <!-- main.jsを最初に読み込んで関数を定義 -->
+  <!--
+    IMPORTANT:
+    When multiple System Configurations exist, each table reads from shared localStorage keys
+    (e.g. OpticalSystemTableData). On refresh, if those shared keys still contain a different
+    config's data, the UI can appear to "switch" and auto-save may overwrite the active config.
+
+    To prevent this, expand the ACTIVE configuration into the shared keys BEFORE main.js
+    imports table modules.
+
+    We only do this when the configuration system has already been initialized (systemConfigurations exists),
+    to avoid wiping legacy single-config data before the migration runs.
+  -->
+  <script type="module">
+    try {
+      const systemConfigurationsJson = localStorage.getItem('systemConfigurations');
+      if (systemConfigurationsJson) {
+        try {
+          const parsed = JSON.parse(systemConfigurationsJson);
+          if (parsed && Array.isArray(parsed.configurations) && parsed.configurations.length > 0) {
+            const { loadActiveConfigurationToTables } = await import('./table-configuration.js');
+            loadActiveConfigurationToTables();
+            console.log('✅ [Startup] Active configuration expanded to table storage keys');
+          }
+        } catch (e) {
+          console.warn('⚠️ [Startup] Failed to parse systemConfigurations; skipping pre-load:', e);
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ [Startup] Failed to pre-load active configuration:', e);
+    }
+  </script>
+  <script type="module" src="main.js?v=2026-01-02q"></script>
+  
+  <!-- Configuration System -->
+  <script type="module" src="table-configuration.js"></script>
+  <script type="module" src="ui/configuration-handlers.js"></script>
+  
+  <!-- Merit Function Inspector (must load before editor) -->
+  <script type="module" src="merit-function-inspector.js"></script>
+  
+  <!-- Merit Function Editor -->
+  <script type="module" src="merit-function-editor.js?v=2026-01-02f"></script>
+
+  <!-- Multi-State / Scenarios (console-driven) -->
+  <script type="module" src="scenarios.js"></script>
+
+  <!-- MVP Optimizer (console-driven; uses Blocks variable flags) -->
+  <script type="module" src="optimization/optimizer-mvp.js"></script>
+
+  <!-- System Requirements Editor -->
+  <script type="module" src="system-requirements-editor.js?v=2026-01-02f"></script>
+  
+  <!-- PSFプロット機能を読み込み -->
+  <script type="module" src="eva-psf-plot.js"></script>
+  
+  <!-- OPDプロファイル実行ハーネス（コンソールから runOPDProfiling(...) を呼び出し） -->
+  <script type="module" src="opd-profiler.js"></script>
+  
+  <!-- PSF WASM計算器を読み込み -->
+  <script>
+    // Keep console quiet by default: suppress PSF WASM glue logs unless explicitly enabled.
+    (() => {
+      if (globalThis.__JS_LensDraw_PSFConsoleFilterInstalled) return;
+      globalThis.__JS_LensDraw_PSFConsoleFilterInstalled = true;
+
+      const isDebugEnabled = () => !!(globalThis.__PSF_DEBUG || globalThis.__OPD_DEBUG);
+      const originalLog = console.log.bind(console);
+
+      console.log = (...args) => {
+        try {
+          if (!isDebugEnabled()) {
+            const first = args[0];
+            if (typeof first === 'string') {
+              if (
+                first.includes('PSF Calculator WebAssembly module') ||
+                first.includes('[WASM-C] Internal timing for')
+              ) {
+                return;
+              }
+            }
+          }
+        } catch {
+          // If filtering fails for any reason, fall back to normal logging.
+        }
+        return originalLog(...args);
+      };
+    })();
+  </script>
+  <script src="psf-wasm.js"></script>
+
+  <!-- Core functionality scripts -->
+  <script>
+    
+        // ray-tracing.jsの関数をグローバルに公開
+        setTimeout(async () => {
+          try {
+            const main = await import('./main.js?v=2026-01-02q');
+            const rayTracing = await import('./ray-tracing.js');
+            const debugUtils = await import('./debug/debug-utils.js');
+            
+            // まずmain.jsからgetWASMSystemをグローバルに公開
+            if (typeof main.getWASMSystem === 'function') {
+              window.getWASMSystem = main.getWASMSystem;
+            }
+            
+            // グローバルに公開
+            window.rayTracingModule = rayTracing;
+            
+            // OptimalAsphericCalculator統合後のasphericSag関数
+            window.asphericSag = async (r, params, mode = "even") => {
+              if (!window.optimalCalculator) {
+                // フォールバック：従来のJavaScript実装
+                return rayTracing.asphericSag(r, params, mode);
+              }
+              
+              // 単一値の場合は配列に変換
+              const rArray = Array.isArray(r) ? r : [r];
+              
+              // パラメータを変換
+              const k = params.conic || 0;
+              const coef = [params.coef1 || 0, params.coef2 || 0, params.coef3 || 0, params.coef4 || 0];
+              
+              // OptimalAsphericCalculatorで最適化計算
+              const result = await window.optimalCalculator.calculateAsphericSag(rArray, k, coef, mode);
+              
+              // 単一値の場合は最初の値のみ返す
+              return Array.isArray(r) ? result.values : result.values[0];
+            };
+            
+                window.intersectAsphericSurface = rayTracing.intersectAsphericSurface;
+            window.surfaceNormal = rayTracing.surfaceNormal;
+            window.displayCacheStats = rayTracing.displayCacheStats;
+            window.clearCache = rayTracing.clearCache;
+            window.disableCache = rayTracing.disableCache;
+            window.enableCache = rayTracing.enableCache;
+            window.enableFullCache = rayTracing.enableFullCache;
+            window.testCacheDebug = rayTracing.testCacheDebug;
+            window.getPerformanceReport = rayTracing.getPerformanceReport;
+            window.enablePerformanceOptimization = rayTracing.enablePerformanceOptimization;
+            window.disablePerformanceOptimization = rayTracing.disablePerformanceOptimization;
+            
+            // Horner法+解析的微分最適化済みの関数をグローバルスコープに公開
+            // asphericSagは既にOptimalAsphericCalculator統合済み
+            
+            if (typeof rayTracing.asphericSagDerivative === 'function') {
+              window.asphericSagDerivative = rayTracing.asphericSagDerivative;
+            }
+            if (typeof rayTracing.surfaceNormal === 'function') {
+              window.surfaceNormal = rayTracing.surfaceNormal;
+            }
+            
+            console.log('🔧 光線追跡機能が利用可能です');
+            console.log('📦 利用可能な関数:', {
+              asphericSag: typeof window.asphericSag,
+              asphericSagDerivative: typeof window.asphericSagDerivative,
+              surfaceNormal: typeof window.surfaceNormal
+            });
+            
+            // WASMデバッグ関数をグローバルにエクスポート
+            if (typeof main.getWASMSystem === 'function') {
+              window.getWASMSystem = main.getWASMSystem;
+            }
+            if (typeof debugUtils.debugWASMSystem === 'function') {
+              window.debugWASMSystem = debugUtils.debugWASMSystem;
+              window.quickWASMComparison = debugUtils.quickWASMComparison;
+            }
+            
+            console.log('🔥 WASM統合システム機能:');
+            console.log('   コンソールで debugWASMSystem() でWASM状態を確認');
+            console.log('   コンソールで quickWASMComparison() でJS vs WASM比較');
+            console.log('   オレンジボタン "🔥 Test WASM" でもテスト可能');
+            
+            // 絞り周辺光線モジュールを読み込み
+            import('./ray-marginal.js').then(marginalRayModule => {
+              window.calculateMarginalRay = marginalRayModule.calculateMarginalRay;
+              window.calculateAllMarginalRays = marginalRayModule.calculateAllMarginalRays;
+              console.log('📐 絞り周辺光線モジュールを読み込みました');
+              console.log('   testMarginalRays() でテスト実行可能');
+            }).catch(error => {
+              console.error('❌ 絞り周辺光線モジュールの読み込みに失敗:', error);
+            });
+          } catch (error) {
+            console.error('❌ ray-tracing.js モジュールの読み込みに失敗:', error);
+          }
+        }, 1000);
+  </script>
+
+  <!-- 絞り周辺光線計算スクリプト -->
+  <script type="module" src="ray-aperture-edge.js"></script>
+
+  <!-- WASM最適化モジュール -->
+  <script src="force-wasm-system.js"></script>
+    <!-- NOTE: Do not load legacy ray-tracing-wasm.js here.
+      It overwrites the global RayTracingWASM symbol and can hide newer exports
+      (e.g. _aspheric_sag_rt10) provided by ray-tracing-wasm-v3.js. -->
+
+  <script>
+    // ForceWASMSystemの確実な初期化確認
+    document.addEventListener('DOMContentLoaded', function() {
+      // Force WASM システムの確認
+      setTimeout(() => {
+        if (typeof ForceWASMSystem === 'undefined') {
+          console.warn('⚠️ ForceWASMSystem がグローバルスコープにありません。スクリプト読み込み順序を確認中...');
+          
+          // 手動でforce-wasm-system.jsを再読み込み
+          const script = document.createElement('script');
+          script.src = 'force-wasm-system.js';
+          script.onload = () => {
+            console.log('✅ ForceWASMSystem 手動読み込み完了');
+            
+            // 統合テスト再実行
+            if (typeof diagnosticIntegrationStatus === 'function') {
+              setTimeout(() => {
+                console.log('🔄 統合状態を再確認中...');
+                diagnosticIntegrationStatus();
+              }, 1000);
+            }
+          };
+          document.head.appendChild(script);
+        } else {
+          console.log('✅ ForceWASMSystem グローバル変数確認完了');
+        }
+      }, 2000);
+      
+      // PSFオブジェクト選択の確実な初期化
+      setTimeout(() => {
+        // console.log('🔧 [PSF] DOMContentLoaded後のPSFオブジェクト選択初期化');
+        if (typeof window.setupPSFObjectSelect === 'function') {
+          window.setupPSFObjectSelect();
+        }
+        
+        // PSF WASM状況の初期化
+        initializePSFWasmStatus();
+      }, 3000);
+    });
+  </script>
+
+  <script>
+    // OptimalAsphericCalculator初期化用ヘルパー関数
+    let optimalCalculatorInitialized = false;
+    let initializationPromise = null;
+    
+    async function ensureOptimalCalculatorReady() {
+      if (optimalCalculatorInitialized) return;
+      
+      if (!initializationPromise) {
+        initializationPromise = (async () => {
+          // OptimalAsphericCalculatorクラスが読み込まれるまで待機
+          while (typeof OptimalAsphericCalculator === 'undefined') {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          
+          console.log('🎯 OptimalAsphericCalculator初期化中...');
+          window.optimalCalculator = new OptimalAsphericCalculator();
+          await window.optimalCalculator.initialize();
+          
+          optimalCalculatorInitialized = true;
+          console.log('✅ OptimalAsphericCalculator初期化完了');
+          console.log(`   最適化戦略: ${window.optimalCalculator.getActiveStrategy()}`);
+          
+          // 統合確認関数を定義
+          window.verifyIntegration = async () => {
+            console.log('🔍 OptimalAsphericCalculator メインアプリ統合確認中...');
+            
+            const calcStatus = window.optimalCalculator ? '✅' : '❌';
+            console.log(`OptimalAsphericCalculator: ${calcStatus}`);
+            
+            if (typeof window.asphericSag === 'function') {
+              const testR = 2.5;
+              const testParams = { radius: 10, conic: -0.8, coef1: 0.01, coef2: 0.02, coef3: 0.03, coef4: 0.04 };
+              
+              const result = await window.asphericSag(testR, testParams);
+              console.log('統合版 asphericSag テスト:', '✅', result);
+            }
+            
+            if (window.optimalCalculator) {
+              const stats = window.optimalCalculator.getPerformanceStats();
+              console.log('性能統計:', stats);
+            }
+            
+            return {
+              calculatorReady: !!window.optimalCalculator,
+              asphericSagIntegrated: typeof window.asphericSag === 'function',
+              integrationComplete: true
+            };
+          };
+          
+          // OptimalAsphericCalculatorテスト関数
+          window.testOptimalCalculator = async () => {
+            console.log('🎯 OptimalAsphericCalculator統合テスト実行中...');
+            
+            const smallTest = await window.optimalCalculator.calculateAsphericSag([1, 2, 3, 4, 5], -0.8, [0.01, 0.02, 0.03]);
+            console.log('小規模計算結果:', smallTest.strategy, smallTest.time + 'ms');
+            
+            const largeInput = Array.from({length: 100000}, (_, i) => i * 0.01);
+            const largeTest = await window.optimalCalculator.calculateAsphericSag(largeInput, -0.8, [0.01, 0.02, 0.03]);
+            console.log('大規模計算結果:', largeTest.strategy, largeTest.time + 'ms');
+            
+            return { small: smallTest, large: largeTest };
+          };
+          
+          console.log('🎯 OptimalAsphericCalculator テスト関数が利用可能になりました:');
+          console.log('   verifyIntegration() - 統合状態確認');
+          console.log('   testOptimalCalculator() - 最適化テスト実行');
+          
+          // ForceWASMSystemの確実な利用を可能にする関数
+          window.createWASMSystem = () => {
+            if (typeof ForceWASMSystem !== 'undefined') {
+              return new ForceWASMSystem();
+            } else {
+              console.error('❌ ForceWASMSystem が利用できません');
+              return null;
+            }
+          };
+          
+          window.testWASMSystemDirect = async () => {
+            console.log('🧪 WASM システム直接テスト開始...');
+            
+            if (typeof ForceWASMSystem === 'undefined') {
+              console.error('❌ ForceWASMSystem クラスが見つかりません');
+              console.log('💡 修復方法: ページを再読み込みしてください');
+              return null;
+            }
+            
+            try {
+              const wasmSystem = new ForceWASMSystem();
+              await wasmSystem.forceInitializeWASM();
+              
+              console.log('✅ WASM システム初期化成功');
+              console.log('📊 システム状態:', wasmSystem.getSystemStatus());
+              
+              // 簡単なテスト実行
+              const testResult = wasmSystem.forceAsphericSag(2.5, 0.1, -0.8, 0.01, 0.02, 0.03, 0.04);
+              console.log('🧮 テスト計算結果:', testResult);
+              
+              return wasmSystem;
+            } catch (error) {
+              console.error('❌ WASM システムテスト失敗:', error);
+              return null;
+            }
+          };
+          
+          console.log('🔧 WASM直接テスト関数が追加されました:');
+          console.log('   createWASMSystem() - WASMシステム作成');
+          console.log('   testWASMSystemDirect() - WASM直接テスト');
+        })();
+      }
+      
+      await initializationPromise;
+    }
+    
+    // WASM最適化システム自動初期化
+    document.addEventListener('DOMContentLoaded', async () => {
+      console.log('🚀 基本システム初期化中...');
+      
+      try {
+        // 基本的な機能のみ有効化（削除された最適化ファイルへの依存を除去）
+        console.log('✅ 基本システム初期化完了');
+        console.log('   メイン光学計算機能が利用可能です');
+        
+        // Loadしたファイル名を表示
+        const loadedFileName = localStorage.getItem('loadedFileName');
+        const loadedFileWarn = localStorage.getItem('loadedFileWarn');
+        const fileNameElement = document.getElementById('loaded-file-name');
+        if (fileNameElement) {
+          if (loadedFileName) {
+            fileNameElement.textContent = loadedFileName;
+            fileNameElement.style.color = '#1a4d8f';
+          } else {
+            fileNameElement.textContent = 'No file loaded';
+            fileNameElement.style.color = '#999';
+          }
+
+          if (loadedFileWarn && loadedFileName) {
+            const s = String(fileNameElement.textContent || '');
+            if (!s.includes('LOAD WARN')) {
+              fileNameElement.textContent = s + ' (LOAD WARN)';
+            }
+          }
+        }
+        
+        // System Data を復元（Reference Focal Length）
+        const systemDataJson = localStorage.getItem('systemData');
+        if (systemDataJson) {
+          try {
+            const systemData = JSON.parse(systemDataJson);
+            const refFLInput = document.getElementById('reference-focal-length');
+            if (refFLInput && systemData.referenceFocalLength !== undefined) {
+              refFLInput.value = systemData.referenceFocalLength;
+              console.log('✅ System Data復元完了:', systemData);
+            }
+          } catch (e) {
+            console.warn('⚠️ System Data復元エラー:', e);
+          }
+        }
+        
+        // Configuration UI を初期化
+        if (typeof window.initializeConfigurationUI === 'function') {
+          window.initializeConfigurationUI();
+          console.log('✅ Configuration UI初期化完了');
+        } else {
+          console.warn('⚠️ initializeConfigurationUI関数が見つかりません');
+        }
+        
+        // 基本テスト関数のみ公開
+        window.testBasicFunctionality = () => {
+          console.log('🧪 基本機能テスト実行中...');
+          
+          // 基本的な光学計算テスト
+          if (typeof window.asphericSag === 'function') {
+            try {
+              const testResult = window.asphericSag(1.0, {radius: 50, conic: -0.5, coef1: 1e-6});
+              console.log('✅ 非球面SAG計算: 正常動作');
+              return true;
+            } catch (error) {
+              console.log('❌ 非球面SAG計算: エラー', error);
+              return false;
+            }
+          } else {
+            console.log('⚠️ asphericSag関数が見つかりません');
+            return false;
+          }
+        };
+        
+        console.log('💡 利用可能な基本テスト:');
+        console.log('   testBasicFunctionality() - 基本機能動作確認');
+        
+      } catch (error) {
+        console.warn('⚠️ 基本システム初期化で軽微なエラー:', error.message);
+        console.log('📋 コア機能は動作を継続');
+      }
+    });
+    
+    // PSF WASM状況初期化関数
+    async function initializePSFWasmStatus() {
+      const statusElement = document.getElementById('psf-wasm-status');
+      if (!statusElement) return;
+      
+      try {
+        // PSFCalculatorを動的インポート
+        const { PSFCalculator } = await import('./eva-psf.js');
+        const psfCalculator = new PSFCalculator();
+        
+        // 初期化を待機
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        const wasmStatus = psfCalculator.getWasmStatus();
+        
+        if (wasmStatus.ready) {
+          statusElement.textContent = 'WASM Status: Ready ✅';
+          statusElement.style.color = 'green';
+        } else if (wasmStatus.available) {
+          statusElement.textContent = 'WASM Status: Initializing... ⚠️';
+          statusElement.style.color = 'orange';
+        } else {
+          statusElement.textContent = 'WASM Status: JavaScript Only ❌';
+          statusElement.style.color = 'red';
+        }
+        
+        // console.log('🔧 [PSF] WASM状況初期化完了:', wasmStatus);
+        
+      } catch (error) {
+        console.error('❌ [PSF] WASM状況初期化エラー:', error);
+        statusElement.textContent = 'WASM Status: Error ❌';
+        statusElement.style.color = 'red';
+      }
+    }
+  </script>
+
+</body>
+
+</html>

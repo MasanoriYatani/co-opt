@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>近軸光線追跡 - アフォーカル系初期値</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        h1 { color: #4ec9b0; }
+        pre {
+            background: #252526;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 3px solid #007acc;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover { background: #005a9e; }
+        .match { color: #4ec9b0; font-weight: bold; }
+        .diff { color: #f48771; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>📐 近軸光線追跡 - アフォーカル系初期値確認</h1>
+    <p>Table 1 の期待値: α₁=-1.0, h₁=3.18288, ᾱ₁=-0.0111031, h̄₁=-0.964659</p>
+    <button onclick="runParaxialTrace()">🚀 計算実行</button>
+    <pre id="output">コンソールを開いて「計算実行」ボタンをクリックしてください</pre>
+
+    <script>
+        // Stop面を通る高さを逆算（角度固定）
+        function findHeightToPassThroughStop(opticalSystemRows, stopIndex, alpha0_fixed, targetH_stop) {
+            let h_min = -10;
+            let h_max = 10;
+            const tolerance = 1e-10;
+            
+            for (let iter = 0; iter < 60; iter++) {
+                const h_mid = (h_min + h_max) / 2;
+                
+                let h = h_mid;
+                let alpha = alpha0_fixed;
+                
+                for (let i = 1; i <= stopIndex; i++) {
+                    const surf = opticalSystemRows[i];
+                    const prevSurf = opticalSystemRows[i - 1];
+                    
+                    const thickness = parseFloat(prevSurf.thickness);
+                    const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                    const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                    
+                    const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                    const N_after = parseFloat(surf.material) || 1.0;
+                    
+                    // Transfer
+                    h = h + thickness * alpha;
+                    
+                    // Refraction (Stop面では屈折しない)
+                    if (i < stopIndex) {
+                        const phi = h * curvature;
+                        alpha = alpha + phi * (N_before - N_after) / N_after;
+                    }
+                }
+                
+                const diff = h - targetH_stop;
+                if (Math.abs(diff) < tolerance) return h_mid;
+                
+                if (diff > 0) h_max = h_mid;
+                else h_min = h_mid;
+            }
+            
+            return (h_min + h_max) / 2;
+        }
+        
+        // Stop面を通る角度を逆算（高さ固定）
+        function findAngleToPassThroughStop(opticalSystemRows, stopIndex, h0, targetH_stop) {
+            let alpha_min = -0.5;
+            let alpha_max = 0.5;
+            const tolerance = 1e-10;
+            
+            for (let iter = 0; iter < 60; iter++) {
+                const alpha_mid = (alpha_min + alpha_max) / 2;
+                
+                let h = h0;
+                let alpha = alpha_mid;
+                
+                for (let i = 1; i <= stopIndex; i++) {
+                    const surf = opticalSystemRows[i];
+                    const prevSurf = opticalSystemRows[i - 1];
+                    
+                    const thickness = parseFloat(prevSurf.thickness);
+                    const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                    const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                    
+                    const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                    const N_after = parseFloat(surf.material) || 1.0;
+                    
+                    // Transfer
+                    h = h + thickness * alpha;
+                    
+                    // Refraction (Stop面では屈折しない)
+                    if (i < stopIndex) {
+                        const phi = h * curvature;
+                        alpha = alpha + phi * (N_before - N_after) / N_after;
+                    }
+                }
+                
+                const diff = h - targetH_stop;
+                if (Math.abs(diff) < tolerance) return alpha_mid;
+                
+                if (diff > 0) alpha_max = alpha_mid;
+                else alpha_min = alpha_mid;
+            }
+            
+            return (alpha_min + alpha_max) / 2;
+        }
+        
+        window.runParaxialTrace = function() {
+            console.clear();
+            console.log('\n📐 ===== Table 1 近軸光線追跡 =====');
+            
+            // Table 1: テレセントリック結像系 (mm単位)
+            const opticalSystemRows_mm = [
+                {id: 0, 'object type': 'Object', surfType: 'Spherical', radius: 'INF', thickness: 127.39, semidia: 0, material: ''},
+                {id: 1, 'object type': '', surfType: 'Spherical', radius: 352.25, thickness: 6.3, semidia: 30, material: ''},
+                {id: 2, 'object type': '', surfType: 'Spherical', radius: -116.5, thickness: 0.6, semidia: 30, material: '1.603'},
+                {id: 3, 'object type': '', surfType: 'Spherical', radius: 45.87, thickness: 14.7, semidia: 30, material: '1.620'},
+                {id: 4, 'object type': '', surfType: 'Spherical', radius: 545, thickness: 21.1, semidia: 30, material: ''},
+                {id: 5, 'object type': '', surfType: 'Spherical', radius: -68.9, thickness: 6.3, semidia: 15, material: '1.616'},
+                {id: 6, 'object type': '', surfType: 'Spherical', radius: 33.95, thickness: 29.3, semidia: 15, material: ''},
+                {id: 7, 'object type': 'Stop', surfType: 'Spherical', radius: 72, thickness: 8, semidia: 5.5, material: '1.486'},
+                {id: 8, 'object type': '', surfType: 'Spherical', radius: -72, thickness: 29.3, semidia: 5.5, material: ''},
+                {id: 9, 'object type': '', surfType: 'Spherical', radius: -33.95, thickness: 6.3, semidia: 15, material: '1.616'},
+                {id: 10, 'object type': '', surfType: 'Spherical', radius: 68.9, thickness: 21.1, semidia: 15, material: ''},
+                {id: 11, 'object type': '', surfType: 'Spherical', radius: -545, thickness: 14.7, semidia: 30, material: '1.620'},
+                {id: 12, 'object type': '', surfType: 'Spherical', radius: -45.87, thickness: 0.6, semidia: 30, material: ''},
+                {id: 13, 'object type': '', surfType: 'Spherical', radius: 116.5, thickness: 6.3, semidia: 30, material: '1.603'},
+                {id: 14, 'object type': '', surfType: 'Spherical', radius: -352.25, thickness: 127.39, semidia: 30, material: ''},
+                {id: 15, 'object type': 'Image', surfType: 'Spherical', radius: 'INF', thickness: 0, semidia: 0, material: ''}
+            ];
+            
+            // 正規化: 40mm = 1 unit に変換
+            const UNIT_SCALE = 40.0;
+            const opticalSystemRows = opticalSystemRows_mm.map(surf => ({
+                ...surf,
+                radius: surf.radius === 'INF' ? 'INF' : surf.radius / UNIT_SCALE,
+                thickness: surf.thickness / UNIT_SCALE,
+                semidia: surf.semidia / UNIT_SCALE
+            }));
+            
+            const stopIndex = 7;
+            
+            console.log(`📊 光学系: ${opticalSystemRows.length}面, Stop: Surface ${stopIndex}`);
+            console.log(`📏 単位系: 40mm = 1 unit (全データを40で割って正規化済み)`);
+            console.log(`📏 アフォーカル系: 主光線は角度-1.0 radで出発、Stop中心を通る高さを逆算`);
+            
+            const d0 = parseFloat(opticalSystemRows[0].thickness);
+            const N1 = parseFloat(opticalSystemRows[1].material) || 1.0;
+            const s1_unit = -d0;
+            
+            console.log(`📍 s1 = ${s1_unit.toFixed(6)} unit (= ${(s1_unit * UNIT_SCALE).toFixed(3)} mm), N1 = ${N1}`);
+            
+            // 主光線: 角度-1.0, 高さは期待値から逆算
+            console.log('\n🔵 主光線 (Chief Ray):');
+            const alpha0_chief = -1.0;  // 固定角度
+            // Transfer式: h1 = h0 + d0 × α0
+            // 期待値から逆算: h0 = h1 - d0 × α0
+            const h1_expected = 3.18288;
+            const h0_chief = h1_expected - d0 * alpha0_chief;
+            
+            console.log(`   角度 α0 = ${alpha0_chief.toFixed(6)} rad`);
+            console.log(`   期待値 h1 = ${h1_expected.toFixed(6)} unit から逆算`);
+            console.log(`   Object面での高さ h0 = ${h0_chief.toFixed(6)} unit`);
+            console.log(`   Transfer: h1 = h0 + d0×α0 = ${h0_chief.toFixed(6)} + ${d0.toFixed(6)}×${alpha0_chief} = ${(h0_chief + d0 * alpha0_chief).toFixed(6)}`);
+            
+            let h = h0_chief, alpha = alpha0_chief;
+            let alpha1, h1;
+            
+            for (let i = 1; i < opticalSystemRows.length; i++) {
+                const surf = opticalSystemRows[i];
+                const prevSurf = opticalSystemRows[i - 1];
+                const thickness = parseFloat(prevSurf.thickness);
+                const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                const N_after = surf['object type'] === 'Image' ? 1.0 : (parseFloat(surf.material) || 1.0);
+                
+                h = h + thickness * alpha;
+                const phi = h * curvature;
+                alpha = alpha + phi * (N_before - N_after) / N_after;
+                
+                if (i === 1) {
+                    alpha1 = alpha;
+                    h1 = h;
+                }
+            }
+            
+            console.log(`   ✅ 第1面通過後: α1 = ${alpha1.toFixed(8)}, h1 = ${h1.toFixed(6)} unit`);
+            
+            // 子午光線: 期待値から初期条件を逆算
+            console.log('\n🔴 子午光線 (Marginal Ray):');
+            const stopRadius = parseFloat(opticalSystemRows[stopIndex].semidia);
+            console.log(`   Stop半径 = ${stopRadius.toFixed(6)} unit (= ${(stopRadius * UNIT_SCALE).toFixed(3)} mm)`);
+            
+            // 期待値
+            const alpha1_bar_expected = -0.0111031;
+            const h1_bar_expected = -0.964659;
+            
+            // 第1面は空気→空気なので屈折なし: ᾱ1 = ᾱ0
+            // よって ᾱ0 = ᾱ1_expected
+            const alpha0_marginal = alpha1_bar_expected;
+            
+            // h̄1 = h̄0 + d0 × ᾱ0 から h̄0 を逆算
+            const h0_marginal = h1_bar_expected - d0 * alpha0_marginal;
+            
+            console.log(`   期待値: ᾱ1 = ${alpha1_bar_expected}, h̄1 = ${h1_bar_expected}`);
+            console.log(`   第1面は空気→空気 → 屈折なし: ᾱ0 = ᾱ1 = ${alpha0_marginal.toFixed(8)}`);
+            console.log(`   逆算: h̄0 = h̄1 - d0×ᾱ0 = ${h1_bar_expected} - ${d0.toFixed(6)}×${alpha0_marginal.toFixed(8)} = ${h0_marginal.toFixed(6)} unit`);
+            console.log(`   Transfer確認: h̄1 = h̄0 + d0×ᾱ0 = ${h0_marginal.toFixed(6)} + ${d0.toFixed(6)}×${alpha0_marginal.toFixed(8)} = ${(h0_marginal + d0 * alpha0_marginal).toFixed(6)}`);
+            
+            let h_bar = h0_marginal, alpha_bar = alpha0_marginal;
+            let alpha1_bar, h1_bar;
+            
+            for (let i = 1; i < opticalSystemRows.length; i++) {
+                const surf = opticalSystemRows[i];
+                const prevSurf = opticalSystemRows[i - 1];
+                const thickness = parseFloat(prevSurf.thickness);
+                const radius = surf.radius === 'INF' ? Infinity : parseFloat(surf.radius);
+                const curvature = radius === Infinity ? 0 : 1.0 / radius;
+                const N_before = i === 1 ? 1.0 : (parseFloat(opticalSystemRows[i - 1].material) || 1.0);
+                const N_after = surf['object type'] === 'Image' ? 1.0 : (parseFloat(surf.material) || 1.0);
+                
+                h_bar = h_bar + thickness * alpha_bar;
+                const phi_bar = h_bar * curvature;
+                alpha_bar = alpha_bar + phi_bar * (N_before - N_after) / N_after;
+                
+                if (i === 1) {
+                    alpha1_bar = alpha_bar;
+                    h1_bar = h_bar;
+                }
+            }
+            
+            console.log(`   ✅ 第1面通過後: ᾱ1 = ${alpha1_bar.toFixed(8)}, h̄1 = ${h1_bar.toFixed(6)} unit`);
+            
+            // 結果比較
+            const expected = {
+                alpha1: -1.0,
+                h1: 3.18288,
+                alpha1_bar: -0.0111031,
+                h1_bar: -0.964659
+            };
+            
+            console.log('\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log('📊 結果比較 (unit単位):');
+            console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+            console.log(`α1:  期待値=${expected.alpha1}, 計算値=${alpha1.toFixed(6)}, 誤差=${Math.abs(expected.alpha1 - alpha1).toFixed(6)}`);
+            console.log(`h1:  期待値=${expected.h1}, 計算値=${h1.toFixed(6)}, 誤差=${Math.abs(expected.h1 - h1).toFixed(6)}`);
+            console.log(`ᾱ1:  期待値=${expected.alpha1_bar}, 計算値=${alpha1_bar.toFixed(7)}, 誤差=${Math.abs(expected.alpha1_bar - alpha1_bar).toFixed(7)}`);
+            console.log(`h̄1:  期待値=${expected.h1_bar}, 計算値=${h1_bar.toFixed(6)}, 誤差=${Math.abs(expected.h1_bar - h1_bar).toFixed(6)}`);
+            
+            // HTML出力
+            const output = document.getElementById('output');
+            const checkMatch = (expected, actual, tolerance = 0.01) => {
+                return Math.abs(expected - actual) < tolerance ? 'match' : 'diff';
+            };
+            
+            output.innerHTML = `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Table 1 近軸光線追跡結果 (unit単位)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔵 主光線 (Chief Ray) - 第1面通過後:
+   α1 = ${alpha1.toFixed(8)} <span class="${checkMatch(expected.alpha1, alpha1)}">(期待値: ${expected.alpha1})</span>
+   h1 = ${h1.toFixed(6)} <span class="${checkMatch(expected.h1, h1)}">(期待値: ${expected.h1})</span>
+
+🔴 子午光線 (Marginal Ray) - 第1面通過後:
+   ᾱ1 = ${alpha1_bar.toFixed(8)} <span class="${checkMatch(expected.alpha1_bar, alpha1_bar, 0.001)}">(期待値: ${expected.alpha1_bar})</span>
+   h̄1 = ${h1_bar.toFixed(6)} <span class="${checkMatch(expected.h1_bar, h1_bar)}">(期待値: ${expected.h1_bar})</span>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📐 誤差:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Δα1  = ${Math.abs(expected.alpha1 - alpha1).toFixed(8)}
+   Δh1  = ${Math.abs(expected.h1 - h1).toFixed(6)}
+   Δᾱ1  = ${Math.abs(expected.alpha1_bar - alpha1_bar).toFixed(8)}
+   Δh̄1  = ${Math.abs(expected.h1_bar - h1_bar).toFixed(6)}
+
+詳細はコンソール (F12) を確認してください
+            `;
+            
+            console.log('\n✅ 計算完了');
+        };
+    </script>
+</body>
+</html>

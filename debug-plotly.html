@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スポットダイアグラム デバッグ</title>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+    <style>
+        body { font-family: monospace; margin: 20px; background: #f5f5f5; }
+        .test-container { background: white; padding: 20px; margin: 10px 0; border-radius: 5px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .success { border-left: 4px solid #00aa00; }
+        .error { border-left: 4px solid #cc0000; }
+        .warning { border-left: 4px solid #ff8800; }
+        h2 { color: #333; margin-top: 0; }
+        .plot-container { width: 100%; height: 400px; margin: 20px 0; border: 1px solid #ddd; border-radius: 3px; }
+        code { background: #eee; padding: 2px 5px; border-radius: 2px; }
+        button { padding: 10px 20px; margin: 5px; cursor: pointer; background: #0066cc; color: white; border: none; border-radius: 3px; }
+        button:hover { background: #0052a3; }
+    </style>
+</head>
+<body>
+    <h1>スポットダイアグラム - Plotly テスト</h1>
+    
+    <div class="test-container success">
+        <h2>✅ Plotly ライブラリ確認</h2>
+        <div id="plotly-check"></div>
+    </div>
+    
+    <div class="test-container">
+        <h2>🧪 テストプロット1: シンプルな散布図</h2>
+        <button onclick="testPlotly1()">プロット1を実行</button>
+        <div id="plot1" class="plot-container"></div>
+        <div id="plot1-result"></div>
+    </div>
+    
+    <div class="test-container">
+        <h2>🧪 テストプロット2: スポットダイアグラムシミュレーション</h2>
+        <button onclick="testPlotly2()">プロット2を実行</button>
+        <div id="plot2" class="plot-container"></div>
+        <div id="plot2-result"></div>
+    </div>
+    
+    <div class="test-container">
+        <h2>🧪 テストプロット3: 複数オブジェクト</h2>
+        <button onclick="testPlotly3()">プロット3を実行</button>
+        <div id="plot3" class="plot-container"></div>
+        <div id="plot3-result"></div>
+    </div>
+
+    <script>
+        // Plotly ライブラリの確認
+        function checkPlotly() {
+            const checkDiv = document.getElementById('plotly-check');
+            if (typeof window.Plotly === 'undefined') {
+                checkDiv.innerHTML = '<span style="color: red;">❌ Plotly が読み込まれていません</span>';
+                return false;
+            }
+            
+            if (typeof window.Plotly.newPlot !== 'function') {
+                checkDiv.innerHTML = '<span style="color: red;">❌ Plotly.newPlot 関数が見つかりません</span>';
+                return false;
+            }
+            
+            checkDiv.innerHTML = `
+                <span style="color: green;">✅ Plotly ライブラリは正常にロードされています</span><br>
+                <code>window.Plotly.version = ${window.Plotly.version || 'unknown'}</code><br>
+                <code>typeof window.Plotly.newPlot = ${typeof window.Plotly.newPlot}</code>
+            `;
+            return true;
+        }
+        
+        function testPlotly1() {
+            const resultDiv = document.getElementById('plot1-result');
+            const plotDiv = document.getElementById('plot1');
+            plotDiv.innerHTML = '';
+            resultDiv.innerHTML = '';
+            
+            try {
+                const trace = {
+                    x: [-1, 0, 1, 2, 3],
+                    y: [1, 0, 2, 1, 3],
+                    mode: 'markers',
+                    type: 'scatter',
+                    marker: { size: 10, color: 'blue' }
+                };
+                
+                const layout = {
+                    title: 'シンプルテスト',
+                    xaxis: { title: 'X' },
+                    yaxis: { title: 'Y' },
+                    width: 620,
+                    height: 400
+                };
+                
+                window.Plotly.newPlot(plotDiv, [trace], layout);
+                resultDiv.innerHTML = '<span style="color: green;">✅ プロット1 成功</span>';
+                console.log('✅ testPlotly1 completed');
+            } catch (error) {
+                resultDiv.innerHTML = `<span style="color: red;">❌ エラー: ${error.message}</span>`;
+                console.error('❌ testPlotly1 error:', error);
+            }
+        }
+        
+        function testPlotly2() {
+            const resultDiv = document.getElementById('plot2-result');
+            const plotDiv = document.getElementById('plot2');
+            plotDiv.innerHTML = '';
+            resultDiv.innerHTML = '';
+            
+            try {
+                // スポットダイアグラムをシミュレート（ランダムなスポット）
+                const xPoints = [];
+                const yPoints = [];
+                for (let i = 0; i < 100; i++) {
+                    xPoints.push((Math.random() - 0.5) * 2);  // -1 to 1 μm
+                    yPoints.push((Math.random() - 0.5) * 2);
+                }
+                
+                const trace = {
+                    x: xPoints,
+                    y: yPoints,
+                    mode: 'markers',
+                    type: 'scatter',
+                    marker: {
+                        size: 5,
+                        color: 'rgba(0, 100, 200, 0.7)',
+                        opacity: 0.8
+                    }
+                };
+                
+                const layout = {
+                    title: 'スポットダイアグラム シミュレーション',
+                    xaxis: { 
+                        title: 'X (μm)',
+                        scaleanchor: 'y',
+                        scaleratio: 1
+                    },
+                    yaxis: { 
+                        title: 'Y (μm)',
+                        scaleanchor: 'x',
+                        scaleratio: 1
+                    },
+                    width: 620,
+                    height: 400,
+                    hovermode: 'closest'
+                };
+                
+                window.Plotly.newPlot(plotDiv, [trace], layout);
+                resultDiv.innerHTML = `<span style="color: green;">✅ プロット2 成功（${xPoints.length}ポイント）</span>`;
+                console.log('✅ testPlotly2 completed');
+            } catch (error) {
+                resultDiv.innerHTML = `<span style="color: red;">❌ エラー: ${error.message}</span>`;
+                console.error('❌ testPlotly2 error:', error);
+            }
+        }
+        
+        function testPlotly3() {
+            const resultDiv = document.getElementById('plot3-result');
+            const plotDiv = document.getElementById('plot3');
+            plotDiv.innerHTML = '';
+            resultDiv.innerHTML = '';
+            
+            try {
+                // 複数オブジェクトのスポットダイアグラム
+                const traces = [];
+                const colors = ['blue', 'red', 'green', 'orange'];
+                
+                for (let objIndex = 0; objIndex < 3; objIndex++) {
+                    const xPoints = [];
+                    const yPoints = [];
+                    const centerX = (objIndex - 1) * 0.5;
+                    const centerY = (objIndex - 1) * 0.5;
+                    
+                    for (let i = 0; i < 50; i++) {
+                        xPoints.push(centerX + (Math.random() - 0.5) * 0.8);
+                        yPoints.push(centerY + (Math.random() - 0.5) * 0.8);
+                    }
+                    
+                    traces.push({
+                        x: xPoints,
+                        y: yPoints,
+                        mode: 'markers',
+                        type: 'scatter',
+                        name: `Object ${objIndex}`,
+                        marker: {
+                            size: 5,
+                            color: colors[objIndex],
+                            opacity: 0.7
+                        }
+                    });
+                }
+                
+                const layout = {
+                    title: '複数オブジェクト スポットダイアグラム',
+                    xaxis: { 
+                        title: 'X (μm)',
+                        scaleanchor: 'y',
+                        scaleratio: 1
+                    },
+                    yaxis: { 
+                        title: 'Y (μm)',
+                        scaleanchor: 'x',
+                        scaleratio: 1
+                    },
+                    width: 620,
+                    height: 400,
+                    hovermode: 'closest'
+                };
+                
+                window.Plotly.newPlot(plotDiv, traces, layout);
+                resultDiv.innerHTML = `<span style="color: green;">✅ プロット3 成功（${traces.length}オブジェクト）</span>`;
+                console.log('✅ testPlotly3 completed');
+            } catch (error) {
+                resultDiv.innerHTML = `<span style="color: red;">❌ エラー: ${error.message}</span>`;
+                console.error('❌ testPlotly3 error:', error);
+            }
+        }
+        
+        // ページ読み込み時に実行
+        window.addEventListener('load', () => {
+            console.log('🔍 ページ読み込み完了、Plotly チェック開始');
+            checkPlotly();
+        });
+    </script>
+</body>
+</html>

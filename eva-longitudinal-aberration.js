@@ -1,0 +1,1124 @@
+/**
+ * Longitudinal Aberration Calculator (Spherical Aberration Diagram)
+ * 球面収差計算モジュール
+ * 
+ * 球面収差 (Spherical Aberration) は光軸方向の焦点位置のずれを表す。
+ * 異なる瞳座標から入射した光線が光軸と交差する位置（焦点）の違いを計算する。
+ * 
+ * 計算方法:
+ * 1. 各瞳座標の光線を追跡
+ * 2. 像面付近で光軸との交点を求める
+ * 3. 主波長の近軸像点（BFL）を基準として、各光線の焦点位置のずれを計算
+ * 
+ * プロット形式:
+ * - X軸: 縦収差（Longitudinal Aberration）[mm] - Z軸方向の焦点位置のずれ
+ * - Y軸: 正規化瞳座標（Normalized Pupil Coordinate）- 絞り面での高さを半径で正規化
+ */
+
+import { generateFiniteSystemCrossBeam } from './gen-ray-cross-finite.js';
+import { generateInfiniteSystemCrossBeam } from './gen-ray-cross-infinite.js';
+import { traceRay } from './ray-tracing.js';
+import { getObjectRows } from './utils/data-utils.js';
+import { calculateBackFocalLength, getRefractiveIndex } from './ray-paraxial.js';
+
+/**
+ * 指定した正規化瞳座標に補間点を追加する
+ * 実測データのみで計算し、外挿は行わない
+ */
+function insertInterpolatedPoint(points, targetNormalized) {
+    if (!Array.isArray(points) || points.length < 2) return points;
+
+    // 既に近傍に点がある場合は追加しない
+    const exists = points.some(p => Math.abs(p.pupilCoordinate - targetNormalized) <= 1e-5);
+    if (exists) return points;
+
+    // 正規化瞳座標でソートして境界を探す
+    points.sort((a, b) => a.pupilCoordinate - b.pupilCoordinate);
+
+    let lower = null;
+    let upper = null;
+    for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        if (p.pupilCoordinate < targetNormalized) {
+            lower = p;
+        } else {
+            upper = p;
+            break;
+        }
+    }
+
+    // 両側がない場合は最も近い点をクランプして使用（描画を欠損させないための最小限の外挿）
+    let newPoint;
+    if (!lower || !upper) {
+        const closest = lower || upper;
+        newPoint = {
+            ...closest,
+            pupilCoordinate: targetNormalized
+        };
+    } else {
+        const ratio = (targetNormalized - lower.pupilCoordinate) / (upper.pupilCoordinate - lower.pupilCoordinate);
+        const lerp = (a, b) => a + (b - a) * ratio;
+        newPoint = {
+            pupilCoordinate: targetNormalized,
+            longitudinalAberration: lerp(lower.longitudinalAberration, upper.longitudinalAberration),
+            focusPosition: lerp(lower.focusPosition, upper.focusPosition),
+            stopHeight: lerp(lower.stopHeight, upper.stopHeight),
+            transverseAberration: lerp(lower.transverseAberration, upper.transverseAberration),
+            sineConditionViolation: (lower.sineConditionViolation !== null && upper.sineConditionViolation !== null)
+                ? lerp(lower.sineConditionViolation, upper.sineConditionViolation)
+                : null
+        };
+    }
+
+    points.push(newPoint);
+    points.sort((a, b) => a.pupilCoordinate - b.pupilCoordinate);
+    return points;
+}
+
+function buildNormalizedPupilSamples(rayCount) {
+    const n = Math.max(2, Math.floor(rayCount));
+    const samples = [];
+    for (let i = 0; i < n; i++) {
+        samples.push(i / (n - 1));
+    }
+    // 0.001を必ず含める（rayCountを増やさずに2番目を置換）
+    if (n >= 3) {
+        samples[1] = 0.001;
+        if (samples[1] <= samples[0]) samples[1] = Math.max(1e-6, samples[0] + 1e-6);
+        if (samples[1] >= samples[2]) samples[1] = Math.max(1e-6, samples[2] * 0.5);
+    } else if (n === 2) {
+        // [0, 1] しか作れないので、0.001は後段の補間に任せる
+    }
+    // 重複排除＆昇順
+    const unique = Array.from(new Set(samples.map(v => +v.toFixed(12)))).sort((a, b) => a - b);
+    return unique;
+}
+
+function traceRayWrapped(opticalSystemRows, ray0, targetSurfaceIndex, originalRayMeta) {
+    try {
+        const rayPath = traceRay(opticalSystemRows, ray0, 1.0, null, targetSurfaceIndex);
+        const success = Array.isArray(rayPath) && rayPath.length > 1;
+        return {
+            success,
+            originalRay: originalRayMeta,
+            rayPath
+        };
+    } catch (error) {
+        return {
+            success: false,
+            originalRay: originalRayMeta,
+            rayPath: null,
+            error
+        };
+    }
+}
+
+function bisectionSolve01(getValueAtT, targetValue, maxIter = 40, tol = 1e-6) {
+    let lo = 0;
+    let hi = 1;
+    let vlo = getValueAtT(lo);
+    let vhi = getValueAtT(hi);
+
+    if (!Number.isFinite(vlo) || !Number.isFinite(vhi)) return null;
+    if (targetValue <= vlo) return 0;
+    if (targetValue >= vhi) return 1;
+
+    for (let iter = 0; iter < maxIter; iter++) {
+        const mid = (lo + hi) / 2;
+        const vmid = getValueAtT(mid);
+        if (!Number.isFinite(vmid)) {
+            // 追跡失敗等：区間を狭める（安全側）
+            hi = mid;
+            continue;
+        }
+        const err = vmid - targetValue;
+        if (Math.abs(err) <= tol) return mid;
+        if (err < 0) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return (lo + hi) / 2;
+}
+
+/**
+ * Source tableから主波長を取得
+ */
+function getPrimaryWavelength() {
+    try {
+        // window.tableSourceから主波長を取得
+        if (window.tableSource && typeof window.tableSource.getData === 'function') {
+            const sourceRows = window.tableSource.getData();
+            const primaryRow = sourceRows.find(row => row.primary === 'Primary Wavelength' || row.primary === 'primary');
+            if (primaryRow && primaryRow.wavelength) {
+                const wavelength = parseFloat(primaryRow.wavelength);
+                console.log(`  主波長: ${wavelength.toFixed(4)} μm`);
+                return wavelength;
+            }
+        }
+    } catch (error) {
+        console.warn('主波長の取得に失敗しました:', error);
+    }
+    
+    // デフォルト波長（d線）
+    console.log('  主波長が設定されていないため、d線（0.5876 μm）を使用');
+    return 0.5876;
+}
+
+/**
+ * Source tableから全波長を取得
+ * @returns {Array} 波長配列 (μm)
+ */
+function getAllWavelengths() {
+    try {
+        if (window.tableSource && typeof window.tableSource.getData === 'function') {
+            const sourceRows = window.tableSource.getData();
+            const wavelengths = sourceRows
+                .map(row => parseFloat(row.wavelength))
+                .filter(w => isFinite(w) && w > 0)
+                .sort((a, b) => a - b); // 波長順にソート
+            
+            if (wavelengths.length > 0) {
+                console.log(`  Source tableから${wavelengths.length}個の波長を取得: ${wavelengths.map(w => w.toFixed(4)).join(', ')} μm`);
+                return wavelengths;
+            }
+        }
+    } catch (error) {
+        console.warn('波長リストの取得に失敗しました:', error);
+    }
+    
+    // デフォルト波長（F, d, C線）
+    console.log('  Source tableが空のため、デフォルト波長（F, d, C線）を使用');
+    return [0.4861, 0.5876, 0.6563];
+}
+
+/**
+ * 像面での光線の横収差を計算
+ * @param {Object} tracedRay - 追跡済み光線データ
+ * @param {number} imagePlaneZ - 像面のZ座標
+ * @returns {Object} {x: 横収差X, y: 横収差Y} または null
+ */
+function calculateTransverseAberration(tracedRay, imagePlaneZ) {
+    if (!tracedRay || !tracedRay.rayPath || tracedRay.rayPath.length < 2) {
+        return null;
+    }
+    
+    const path = tracedRay.rayPath;
+    const lastPoint = path[path.length - 1];
+    const secondLastPoint = path[path.length - 2];
+    
+    // 方向ベクトル
+    const direction = {
+        x: lastPoint.x - secondLastPoint.x,
+        y: lastPoint.y - secondLastPoint.y,
+        z: lastPoint.z - secondLastPoint.z
+    };
+    
+    // 像面までのパラメータt
+    const dz = direction.z;
+    if (Math.abs(dz) < 1e-10) {
+        return null; // 光軸に垂直な光線
+    }
+    
+    const t = (imagePlaneZ - lastPoint.z) / dz;
+    
+    // 像面での交点座標
+    const intersectionX = lastPoint.x + t * direction.x;
+    const intersectionY = lastPoint.y + t * direction.y;
+    
+    return {
+        x: intersectionX,
+        y: intersectionY
+    };
+}
+
+/**
+ * 正弦条件違反量を計算
+ * SC = (n' sinU')/(n sinU) - m
+ * 
+ * @param {Object} tracedRay - 追跡済み光線データ
+ * @param {number} mParax - 近軸横倍率
+ * @param {number} nObj - 物体空間の屈折率
+ * @param {number} nImg - 像空間の屈折率
+ * @returns {number} 正弦条件違反量 SC (null if calculation fails)
+ */
+function calculateSineConditionViolation(tracedRay, mParax, nObj = 1.0, nImg = 1.0) {
+    if (!tracedRay || !tracedRay.rayPath || tracedRay.rayPath.length < 2) {
+        return null;
+    }
+    
+    const path = tracedRay.rayPath;
+    
+    // 物体側方向余弦（最初の2点から計算）
+    const firstPoint = path[0];
+    const secondPoint = path[1];
+    const objDir = {
+        x: secondPoint.x - firstPoint.x,
+        y: secondPoint.y - firstPoint.y,
+        z: secondPoint.z - firstPoint.z
+    };
+    const objLength = Math.sqrt(objDir.x ** 2 + objDir.y ** 2 + objDir.z ** 2);
+    if (objLength < 1e-10) return null;
+    
+    // 単位方向余弦
+    const L_obj = objDir.x / objLength;
+    const M_obj = objDir.y / objLength;
+    
+    // 像側方向余弦（最後の2点から計算）
+    const lastPoint = path[path.length - 1];
+    const secondLastPoint = path[path.length - 2];
+    const imgDir = {
+        x: lastPoint.x - secondLastPoint.x,
+        y: lastPoint.y - secondLastPoint.y,
+        z: lastPoint.z - secondLastPoint.z
+    };
+    const imgLength = Math.sqrt(imgDir.x ** 2 + imgDir.y ** 2 + imgDir.z ** 2);
+    if (imgLength < 1e-10) return null;
+    
+    // 単位方向余弦
+    const L_img = imgDir.x / imgLength;
+    const M_img = imgDir.y / imgLength;
+    
+    // sinU = sqrt(L^2 + M^2) (光軸からの傾き)
+    const sinU = Math.hypot(L_obj, M_obj);
+    const sinUp = Math.hypot(L_img, M_img);
+    
+    // 数値安定化：極小分母の保護
+    if (sinU < 1e-10) {
+        return null; // 軸上光線に近すぎる
+    }
+    
+    // 正弦条件違反量: ΔS = (n' sinU')/(n sinU) - m
+    const ratio = (nImg * sinUp) / (nObj * sinU);
+    const SC = ratio - mParax;
+    
+    return SC;
+}
+
+/**
+ * 絞り面を見つける
+ */
+function findStopSurface(opticalSystemRows) {
+    for (let i = 0; i < opticalSystemRows.length; i++) {
+        const surface = opticalSystemRows[i];
+        if (surface.stop === 'Yes' || surface.Stop === 'Yes' || 
+            surface.stop === true || surface.Stop === true) {
+            return i;
+        }
+    }
+    // 絞り面が見つからない場合は中央の面を返す
+    return Math.floor(opticalSystemRows.length / 2);
+}
+
+/**
+ * 有限系・無限系の判定
+ */
+function isFiniteSystem(opticalSystemRows) {
+    if (!opticalSystemRows || opticalSystemRows.length === 0) {
+        return false;
+    }
+    const firstSurface = opticalSystemRows[0];
+    const thickness = firstSurface.thickness || firstSurface.Thickness;
+    if (thickness === 'INF' || thickness === Infinity) {
+        return false;
+    }
+    const numThickness = parseFloat(thickness);
+    return Number.isFinite(numThickness) && numThickness > 0;
+}
+
+/**
+ * 光線と光軸の交点（焦点位置）を求める
+ * @param {Object} ray - 光線データ
+ * @param {number} approximateZ - 近似的な像面Z座標
+ * @returns {number} 光軸上の交点Z座標（焦点位置）
+ */
+function findRayAxisIntersection(tracedRay, imagePlaneZ) {
+    // tracedRay は {success, originalRay, rayPath, ...} の構造
+    if (!tracedRay || !tracedRay.rayPath || tracedRay.rayPath.length < 2) {
+        console.warn('⚠️ 光線パスが不正:', tracedRay);
+        return null;
+    }
+    
+    const path = tracedRay.rayPath;
+    const lastPoint = path[path.length - 1];
+    
+    // Thickness 0またはごく小さい値の面がある場合に対応
+    // 十分に離れた点を探す（Z差が実用的に計算可能な点を優先）
+    let secondLastPoint = null;
+    let selectionStage = 0;  // デバッグ用
+    
+    // 第1段階: Z座標が実用的に異なる点を探す（1mm以上）
+    // on-axis rayで極小deltaZを避けるために閾値を大幅に上げる
+    for (let i = path.length - 2; i >= 0; i--) {
+        const deltaZ = Math.abs(path[i].z - lastPoint.z);
+        if (deltaZ > 1.0) {  // 1mm以上
+            secondLastPoint = path[i];
+            selectionStage = 1;
+            break;
+        }
+    }
+    
+    // 第2段階: 見つからなければ100μm以上の点を探す
+    if (!secondLastPoint) {
+        for (let i = path.length - 2; i >= 0; i--) {
+            const deltaZ = Math.abs(path[i].z - lastPoint.z);
+            if (deltaZ > 0.1) {  // 100μm以上
+                secondLastPoint = path[i];
+                selectionStage = 2;
+                break;
+            }
+        }
+    }
+    
+    // 第3段階: 1μm以上
+    if (!secondLastPoint) {
+        for (let i = path.length - 2; i >= 0; i--) {
+            const deltaZ = Math.abs(path[i].z - lastPoint.z);
+            if (deltaZ > 0.001) {  // 1μm以上
+                secondLastPoint = path[i];
+                selectionStage = 3;
+                break;
+            }
+        }
+    }
+    
+    // 第4段階: 最後の手段として最も遠い点を使う
+    if (!secondLastPoint && path.length >= 2) {
+        secondLastPoint = path[0];  // 最初の点を使用
+        selectionStage = 4;
+    }
+    
+    if (!secondLastPoint) {
+        console.warn('⚠️ 適切な前の点が見つかりません（光線パスが不正）');
+        return null;
+    }
+    
+    // 方向ベクトル
+    const direction = {
+        x: lastPoint.x - secondLastPoint.x,
+        y: lastPoint.y - secondLastPoint.y,
+        z: lastPoint.z - secondLastPoint.z
+    };
+    
+    // デバッグ: 各波長の最初の1本だけログ出力
+    const rayId = tracedRay.originalRay ? 
+        `${tracedRay.originalRay.wavelength}_${tracedRay.originalRay.py || tracedRay.originalRay.px || 0}` : 
+        'unknown';
+    
+    if (!window._sphericalAberDebugCount) {
+        window._sphericalAberDebugCount = 0;
+    }
+    
+    if (window._sphericalAberDebugCount < 3) {  // 最初の3本（各波長1本ずつ）
+        window._sphericalAberDebugCount++;
+        const deltaZ = Math.abs(direction.z);
+        const pointIndex = path.findIndex(p => p === secondLastPoint);
+        console.log(`🔍 [DEBUG ${window._sphericalAberDebugCount}] Stage ${selectionStage} selected (ray: ${rayId})`);
+        console.log(`   deltaZ=${deltaZ.toExponential(3)}, pointIndex=${pointIndex}/${path.length-1}`);
+        console.log(`   lastPoint: (${lastPoint.x.toFixed(6)}, ${lastPoint.y.toFixed(6)}, ${lastPoint.z.toFixed(6)})`);
+        console.log(`   secondLastPoint: (${secondLastPoint.x.toFixed(6)}, ${secondLastPoint.y.toFixed(6)}, ${secondLastPoint.z.toFixed(6)})`);
+        console.log(`   direction: dx=${direction.x.toExponential(3)}, dy=${direction.y.toExponential(3)}, dz=${direction.z.toExponential(3)}`);
+        console.log(`   rayPath length: ${path.length}`);
+    }
+    
+    // 光軸に平行な場合（x, y方向の変化がほぼゼロ）
+    // 注意：無限遠物体では軸上光線が光軸に近いため、閾値を緩和
+    const xyMagnitude = Math.sqrt(direction.x * direction.x + direction.y * direction.y);
+    if (xyMagnitude < 1e-12) {  // 1e-10 → 1e-12 に変更
+        // 完全に平行な場合は、最終点のZ座標を返す
+        return lastPoint.z;
+    }
+    
+    // 光軸との交点を求める（x = 0, y = 0 となるz座標）
+    // パラメトリック方程式: P = lastPoint + t * direction
+    // x = 0: lastPoint.x + t * direction.x = 0 → t_x = -lastPoint.x / direction.x
+    // y = 0: lastPoint.y + t * direction.y = 0 → t_y = -lastPoint.y / direction.y
+    
+    // 最小二乗法で最適なtを求める（x=0とy=0の両方に最も近い点）
+    // 目的関数: f(t) = (lastPoint.x + t*direction.x)^2 + (lastPoint.y + t*direction.y)^2
+    // f'(t) = 0 を解く:
+    // 2*(lastPoint.x + t*direction.x)*direction.x + 2*(lastPoint.y + t*direction.y)*direction.y = 0
+    // t*(direction.x^2 + direction.y^2) = -(lastPoint.x*direction.x + lastPoint.y*direction.y)
+    
+    const numerator = -(lastPoint.x * direction.x + lastPoint.y * direction.y);
+    const denominator = direction.x * direction.x + direction.y * direction.y;
+    
+    if (Math.abs(denominator) < 1e-12) {
+        // xy成分がゼロの場合（軸上光線または非常に光軸に近い光線）
+        // lastPointが既に光軸上にあるかチェック
+        const distanceFromAxis = Math.sqrt(lastPoint.x * lastPoint.x + lastPoint.y * lastPoint.y);
+        if (distanceFromAxis < 0.1) {
+            // 光軸上またはほぼ光軸上なので、そのZ座標を返す
+            return lastPoint.z;
+        } else {
+            console.warn('⚠️ 方向ベクトルのxy成分がゼロだが、光線が光軸から離れています');
+            return null;
+        }
+    }
+    
+    const t = numerator / denominator;
+    
+    // 交点のz座標と位置
+    const intersectionZ = lastPoint.z + t * direction.z;
+    const intersectionX = lastPoint.x + t * direction.x;
+    const intersectionY = lastPoint.y + t * direction.y;
+    const distanceFromAxis = Math.sqrt(intersectionX * intersectionX + intersectionY * intersectionY);
+    
+    // 交点が光軸に十分近いか確認（数値誤差の確認用）
+    if (distanceFromAxis > 0.01) {
+        console.warn(`⚠️ 光軸交点の精度が低い: 光軸からの距離 = ${distanceFromAxis.toFixed(6)} mm`);
+    }
+    
+    // 妥当性チェック：像面から極端に離れた位置は除外
+    const maxDeviation = 1000; // mm
+    if (Math.abs(intersectionZ - imagePlaneZ) > maxDeviation) {
+        console.warn(`⚠️ 焦点位置が像面から極端に離れています: ${intersectionZ.toFixed(3)} mm (像面: ${imagePlaneZ.toFixed(3)} mm)`);
+        return null;
+    }
+    
+    // デバッグ情報は詳細度を下げる
+    // console.log(`✓ 光軸交点 Z座標: ${intersectionZ.toFixed(6)} mm (t=${t.toFixed(6)})`);
+    return intersectionZ;
+}
+
+/**
+ * 縦収差データを計算する（球面収差図用）
+ * 画角0°（軸上）の光線のみを使用し、各波長ごとに計算
+ * @param {Array} opticalSystemRows - 光学系データ
+ * @param {number} targetSurfaceIndex - 評価面のインデックス
+ * @param {Array} wavelengths - 波長リスト (μm)。nullの場合はSource tableから自動取得
+ * @param {number} rayCount - 光線数
+ * @returns {Object} 縦収差データ
+ */
+export function calculateLongitudinalAberration(
+    opticalSystemRows, 
+    targetSurfaceIndex, 
+    wavelengths = null,
+    rayCount = 51,
+    options = null
+) {
+    const silent = !!(options && typeof options === 'object' && options.silent === true);
+    const prevLog = console.log;
+    if (silent) {
+        console.log = () => {};
+    }
+    try {
+    // 波長がnullまたは未指定の場合、Source tableから取得
+    if (!wavelengths || wavelengths.length === 0) {
+        wavelengths = getAllWavelengths();
+    }
+    // デバッグカウンタをリセット
+    window._sphericalAberDebugCount = 0;
+    
+    console.log('📊 球面収差計算開始（軸上光線、各波長）');
+    console.log(`📊 波長: ${wavelengths.map(w => w.toFixed(4)).join(', ')} μm`);
+    
+    const isFinite = isFiniteSystem(opticalSystemRows);
+    console.log(`📊 光学系タイプ: ${isFinite ? '有限系' : '無限系'}`);
+    
+    // 像面のZ座標を取得（近似値）
+    let imagePlaneZ = 0;
+    for (let i = 0; i <= targetSurfaceIndex; i++) {
+        const surface = opticalSystemRows[i];
+        const thickness = parseFloat(surface.thickness || surface.Thickness || 0);
+        if (Number.isFinite(thickness)) {
+            imagePlaneZ += thickness;
+        }
+    }
+    
+    console.log(`📊 像面Z座標（近似）: ${imagePlaneZ.toFixed(3)} mm`);
+    
+    // 主波長を取得
+    const primaryWavelength = getPrimaryWavelength();
+    console.log(`📊 主波長: ${primaryWavelength.toFixed(4)} μm`);
+    
+    // 主波長のBFL（近軸像点位置）を計算
+    const lastSurfaceZ = imagePlaneZ; // 最終面のZ座標
+    const primaryBFL = calculateBackFocalLength(opticalSystemRows, primaryWavelength);
+    const primaryImageZ = lastSurfaceZ + primaryBFL;
+    console.log(`📊 主波長の近軸像点位置: ${primaryImageZ.toFixed(6)} mm (BFL: ${primaryBFL.toFixed(6)} mm)`);
+    
+    // 物体空間と像空間の屈折率を取得
+    const nObj = 1.0; // 通常は空気（物体空間）
+    
+    // 像空間の屈折率（最終面の後の媒質）
+    let nImg = 1.0; // デフォルトは空気
+    if (targetSurfaceIndex < opticalSystemRows.length - 1) {
+        const lastSurface = opticalSystemRows[targetSurfaceIndex];
+        const material = lastSurface.glass || lastSurface.Glass || '';
+        if (material && material !== '' && material !== 'AIR') {
+            // 主波長での屈折率を計算
+            nImg = getRefractiveIndex(lastSurface, primaryWavelength);
+            if (!nImg || nImg === 1.0) {
+                // 取得に失敗した場合はデフォルトのガラス屈折率
+                nImg = 1.5;
+                console.warn(`⚠️ 屈折率の取得に失敗、デフォルト値 ${nImg} を使用`);
+            }
+        }
+    }
+    console.log(`📊 物体空間屈折率: ${nObj}, 像空間屈折率: ${nImg}`);
+    
+    // 近軸横倍率（軸上物点の場合、倍率は定義されない）
+    // 無限系の場合: m = 0 として扱う
+    // 有限系の場合: m = s'/s (像距離/物体距離) で計算すべきだが、軸上光線なので0
+    const mParax = isFinite ? 0 : 0; // 軸上光線なので横倍率は0
+    console.log(`📊 近軸横倍率: ${mParax} (軸上光線)`);
+    
+    // 各波長について縦収差を計算
+    const meridionalData = [];
+    const sagittalData = [];
+    const wavelengthBFLs = {}; // 各波長のBFLを記録
+    
+    for (let wlIndex = 0; wlIndex < wavelengths.length; wlIndex++) {
+        const wavelength = wavelengths[wlIndex];
+        console.log(`\n📊 ========== 波長 ${wlIndex + 1}/${wavelengths.length}: ${wavelength.toFixed(4)} μm ==========`);
+        
+        // この波長のBFLを計算
+        const currentBFL = calculateBackFocalLength(opticalSystemRows, wavelength);
+        const currentImageZ = lastSurfaceZ + currentBFL;
+        wavelengthBFLs[wavelength] = currentBFL;
+        console.log(`  この波長の近軸像点位置: ${currentImageZ.toFixed(6)} mm (BFL: ${currentBFL.toFixed(6)} mm)`);
+        
+        // 軸上（画角0°）の十字光線を生成
+        let crossBeamResult;
+        if (isFinite) {
+            console.log(`  有限系: 軸上物点 (xHeight=0, yHeight=0), 波長=${wavelength.toFixed(4)} μm`);
+            crossBeamResult = generateFiniteSystemCrossBeam(
+                opticalSystemRows,
+                [{ xHeight: 0, yHeight: 0 }],  // 配列形式で渡す
+                {
+                    wavelength: wavelength,
+                    rayCount: rayCount,
+                    crossType: 'both',
+                    debugMode: false,
+                    targetSurfaceIndex: targetSurfaceIndex
+                }
+            );
+        } else {
+            console.log(`  無限系: 軸上角度 (x=0, y=0), 波長=${wavelength.toFixed(4)} μm`);
+            // 無限系の場合、軸上（光軸に平行）
+            const objectAngle = {
+                x: 0,  // 軸上
+                y: 0   // 軸上
+            };
+            
+            crossBeamResult = generateInfiniteSystemCrossBeam(
+                opticalSystemRows,
+                objectAngle,
+                {
+                    wavelength: wavelength,
+                    rayCount: rayCount,
+                    crossType: 'both',
+                    debugMode: false,
+                    targetSurfaceIndex: targetSurfaceIndex
+                }
+            );
+        }
+        
+        if (!crossBeamResult || !crossBeamResult.success) {
+            console.warn(`⚠️ 波長 ${wavelength.toFixed(4)} μm: 光線生成失敗`);
+            continue;
+        }
+        
+        // 追跡済み光線データを取得（フォールバック用に保持）
+        const tracedRays = crossBeamResult.allTracedRays || [];
+        const successfulRays = tracedRays.filter(r => r.success && r.rayPath && r.rayPath.length > 1);
+        
+        console.log(`  追跡光線: ${tracedRays.length}本, 成功: ${successfulRays.length}本`);
+        
+        if (successfulRays.length === 0) {
+            console.warn(`⚠️ 波長 ${wavelength.toFixed(4)} μm: 成功した光線がありません`);
+            continue;
+        }
+        
+        // 全波長共通の基準: 主波長の近軸像点位置
+        // 縦収差 = 実際の焦点位置 - 主波長の近軸像点位置
+        const referenceImageZ = primaryImageZ; // 主波長のBFLで計算した近軸像点
+        console.log(`  基準像点位置（主波長のBFL）: ${referenceImageZ.toFixed(6)} mm`);
+        
+        // 主光線の焦点位置を求める（瞳位置0のデータ用）
+        const chiefRay = successfulRays.find(r => 
+            r.originalRay && (r.originalRay.type === 'chief' || r.originalRay.role === 'chief')
+        );
+        let chiefFocusZ = currentImageZ; // デフォルトはこの波長の近軸像点
+        
+        if (chiefRay && chiefRay.rayPath) {
+            const chiefIntersection = findRayAxisIntersection(chiefRay, imagePlaneZ);
+            if (chiefIntersection !== null) {
+                chiefFocusZ = chiefIntersection;
+            }
+        }
+        
+        // 絞り面のインデックスを取得
+        const stopSurfaceIndex = findStopSurface(opticalSystemRows);
+        const stopSurface = opticalSystemRows[stopSurfaceIndex];
+        const stopRadius = parseFloat(stopSurface.semiDiameter || stopSurface['Semi-Diameter'] || 10);
+
+        // rayCount で正規化瞳座標を分割（0.001を含める）し、その正規化瞳座標を「実際の絞り面高さ」に一致させるように光線を狙い撃ち
+        const normalizedSamples = buildNormalizedPupilSamples(rayCount);
+
+        const buildAimedRaysForDirection = (axis /* 'meridional'|'sagittal' */) => {
+            // +側の境界（最大）を定義
+            if (isFinite) {
+                const crossBeamRays = crossBeamResult.allCrossBeamRays || [];
+                const chief = crossBeamRays.find(r => r.type === 'chief');
+                const upper = crossBeamRays.find(r => r.type === 'upper_marginal');
+                const right = crossBeamRays.find(r => r.type === 'right_marginal');
+                const boundary = axis === 'meridional' ? upper : right;
+                if (!chief || !boundary) return null;
+
+                const chiefDir = chief.direction;
+                const boundaryDir = boundary.direction;
+                const origin = chief.position; // object point
+
+                // 最大絞り面高さ（境界光線の stop 通過高さ）を実測
+                const boundaryTr = traceRayWrapped(
+                    opticalSystemRows,
+                    { pos: origin, dir: boundaryDir, wavelength },
+                    targetSurfaceIndex,
+                    { type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross', role: 'boundary', wavelength }
+                );
+                if (!boundaryTr.success || !boundaryTr.rayPath || boundaryTr.rayPath.length <= stopSurfaceIndex) return null;
+                const bStop = boundaryTr.rayPath[stopSurfaceIndex];
+                const maxStop = Math.abs(axis === 'meridional' ? bStop.y : bStop.x);
+                if (!(maxStop > 0)) return null;
+
+                // 0 側（chief）の stop 高さ
+                const chiefTr = traceRayWrapped(
+                    opticalSystemRows,
+                    { pos: origin, dir: chiefDir, wavelength },
+                    targetSurfaceIndex,
+                    { type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross', role: 'chief', wavelength }
+                );
+
+                const aimed = [];
+                for (let idx = 0; idx < normalizedSamples.length; idx++) {
+                    const pNorm = normalizedSamples[idx];
+                    const targetStop = pNorm * maxStop;
+
+                    const getStopAtT = (t) => {
+                        // chief→boundary の方向を t で補間し、stop高さが targetStop になるようにtを解く
+                        const dir = {
+                            x: chiefDir.x + t * (boundaryDir.x - chiefDir.x),
+                            y: chiefDir.y + t * (boundaryDir.y - chiefDir.y),
+                            z: chiefDir.z + t * (boundaryDir.z - chiefDir.z)
+                        };
+                        const tr = traceRayWrapped(
+                            opticalSystemRows,
+                            { pos: origin, dir, wavelength },
+                            targetSurfaceIndex,
+                            { type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross', role: `aim_${pNorm}`, wavelength }
+                        );
+                        if (!tr.success || !tr.rayPath || tr.rayPath.length <= stopSurfaceIndex) return NaN;
+                        const s = tr.rayPath[stopSurfaceIndex];
+                        return Math.abs(axis === 'meridional' ? s.y : s.x);
+                    };
+
+                    let tSolved;
+                    if (pNorm <= 0) {
+                        tSolved = 0;
+                    } else if (pNorm >= 1) {
+                        tSolved = 1;
+                    } else {
+                        // 目標許容誤差（stopのスケールに合わせる）
+                        const tol = Math.max(1e-6, maxStop * 1e-6);
+                        tSolved = bisectionSolve01(getStopAtT, targetStop, 40, tol);
+                        if (tSolved === null) tSolved = pNorm; // 最後のフォールバック
+                    }
+
+                    const dirSolved = {
+                        x: chiefDir.x + tSolved * (boundaryDir.x - chiefDir.x),
+                        y: chiefDir.y + tSolved * (boundaryDir.y - chiefDir.y),
+                        z: chiefDir.z + tSolved * (boundaryDir.z - chiefDir.z)
+                    };
+                    const trSolved = traceRayWrapped(
+                        opticalSystemRows,
+                        { pos: origin, dir: dirSolved, wavelength },
+                        targetSurfaceIndex,
+                        {
+                            type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross',
+                            role: axis,
+                            wavelength,
+                            pupilCoordinateRequested: pNorm,
+                            aimParameter: tSolved
+                        }
+                    );
+                    if (trSolved.success) aimed.push(trSolved);
+                }
+
+                // chiefTrace が成功していれば先頭に保持（0の参照用）
+                if (chiefTr && chiefTr.success) {
+                    // 既にpNorm=0で生成されている場合は重複しない
+                    const hasZero = aimed.some(r => r.originalRay && r.originalRay.pupilCoordinateRequested === 0);
+                    if (!hasZero) aimed.unshift(chiefTr);
+                }
+
+                return aimed;
+            } else {
+                // 無限系：chiefOrigin と boundaryOrigin の間で origin を動かし、stop通過高さが target に一致するようにtを解く
+                const obj0 = (crossBeamResult.objectResults && crossBeamResult.objectResults[0]) || null;
+                if (!obj0 || !obj0.chiefRayOrigin || !obj0.apertureBoundaryRays || !obj0.direction) return null;
+
+                const chiefOrigin = obj0.chiefRayOrigin;
+                const direction = { x: obj0.direction.i, y: obj0.direction.j, z: obj0.direction.k };
+                const boundaryRay = obj0.apertureBoundaryRays.find(r => r.direction === (axis === 'meridional' ? 'upper' : 'right'));
+                if (!boundaryRay || !boundaryRay.origin) return null;
+
+                const delta = {
+                    x: boundaryRay.origin.x - chiefOrigin.x,
+                    y: boundaryRay.origin.y - chiefOrigin.y,
+                    z: boundaryRay.origin.z - chiefOrigin.z
+                };
+                const deltaLen = Math.hypot(delta.x, delta.y, delta.z);
+                if (!(deltaLen > 0)) return null;
+                const deltaUnit = { x: delta.x / deltaLen, y: delta.y / deltaLen, z: delta.z / deltaLen };
+
+                // 境界での最大stop高さ（実測）
+                const boundaryTr = traceRayWrapped(
+                    opticalSystemRows,
+                    { pos: boundaryRay.origin, dir: direction, wavelength },
+                    targetSurfaceIndex,
+                    { type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross', role: 'boundary', wavelength }
+                );
+                if (!boundaryTr.success || !boundaryTr.rayPath || boundaryTr.rayPath.length <= stopSurfaceIndex) return null;
+                const bStop = boundaryTr.rayPath[stopSurfaceIndex];
+                const maxStop = Math.abs(axis === 'meridional' ? bStop.y : bStop.x);
+                if (!(maxStop > 0)) return null;
+
+                const aimed = [];
+                for (let idx = 0; idx < normalizedSamples.length; idx++) {
+                    const pNorm = normalizedSamples[idx];
+                    const targetStop = pNorm * maxStop;
+
+                    const getStopAtT = (t) => {
+                        const pos = {
+                            x: chiefOrigin.x + deltaUnit.x * (t * deltaLen),
+                            y: chiefOrigin.y + deltaUnit.y * (t * deltaLen),
+                            z: chiefOrigin.z + deltaUnit.z * (t * deltaLen)
+                        };
+                        const tr = traceRayWrapped(
+                            opticalSystemRows,
+                            { pos, dir: direction, wavelength },
+                            targetSurfaceIndex,
+                            { type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross', role: `aim_${pNorm}`, wavelength }
+                        );
+                        if (!tr.success || !tr.rayPath || tr.rayPath.length <= stopSurfaceIndex) return NaN;
+                        const s = tr.rayPath[stopSurfaceIndex];
+                        return Math.abs(axis === 'meridional' ? s.y : s.x);
+                    };
+
+                    let tSolved;
+                    if (pNorm <= 0) tSolved = 0;
+                    else if (pNorm >= 1) tSolved = 1;
+                    else {
+                        const tol = Math.max(1e-6, maxStop * 1e-6);
+                        tSolved = bisectionSolve01(getStopAtT, targetStop, 40, tol);
+                        if (tSolved === null) tSolved = pNorm;
+                    }
+
+                    const posSolved = {
+                        x: chiefOrigin.x + deltaUnit.x * (tSolved * deltaLen),
+                        y: chiefOrigin.y + deltaUnit.y * (tSolved * deltaLen),
+                        z: chiefOrigin.z + deltaUnit.z * (tSolved * deltaLen)
+                    };
+                    const trSolved = traceRayWrapped(
+                        opticalSystemRows,
+                        { pos: posSolved, dir: direction, wavelength },
+                        targetSurfaceIndex,
+                        {
+                            type: axis === 'meridional' ? 'vertical_cross' : 'horizontal_cross',
+                            role: axis,
+                            wavelength,
+                            pupilCoordinateRequested: pNorm,
+                            aimParameter: tSolved
+                        }
+                    );
+                    if (trSolved.success) aimed.push(trSolved);
+                }
+                return aimed;
+            }
+        };
+
+        const aimedMeridionalRays = buildAimedRaysForDirection('meridional');
+        const aimedSagittalRays = buildAimedRaysForDirection('sagittal');
+
+        // メリジオナル光線の縦収差を計算（垂直クロス光線）
+        const meridionalRays = (aimedMeridionalRays && aimedMeridionalRays.length > 0)
+            ? aimedMeridionalRays
+            : successfulRays.filter(r => r.originalRay && r.originalRay.type === 'vertical_cross');
+        
+        // stopSurfaceIndex/stopRadius は上で算出済み
+        
+        // 像面での評価（主波長の近軸像点位置を使用）
+        const evaluationPlaneZ = primaryImageZ;
+        
+        // まず全ての光線の絞り面での高さを収集
+        const tempMeridionalPoints = [];
+        for (let i = 0; i < meridionalRays.length; i++) {
+            const tracedRay = meridionalRays[i];
+            const focusZ = findRayAxisIntersection(tracedRay, imagePlaneZ);
+            
+            // 像面での横収差を計算
+            const transverseAb = calculateTransverseAberration(tracedRay, evaluationPlaneZ);
+            
+            // 軸上光線のため、SC計算はスキップ（物理的に意味がない）
+            // const sc = calculateSineConditionViolation(tracedRay, mParax, nObj, nImg);
+            const sc = null;
+            
+            if (focusZ !== null && transverseAb !== null && tracedRay.rayPath && tracedRay.rayPath.length > stopSurfaceIndex) {
+                // 縦収差 = 最終面からの距離（実際の焦点位置 - 最終面Z座標）
+                const longitudinalAberration = focusZ - lastSurfaceZ;
+                const stopPoint = tracedRay.rayPath[stopSurfaceIndex];
+                const pupilHeight = Math.abs(stopPoint.y); // 絶対値（0から1の範囲で表示）
+                
+                // 光軸上の光線（瞳高さ≈0）は球面収差図から除外
+                if (pupilHeight < 1e-6) {
+                    continue;
+                }
+                
+                // 横収差（メリジオナルなのでY方向）
+                const transverseAberration = transverseAb.y;
+                
+                tempMeridionalPoints.push({
+                    pupilHeight: pupilHeight,
+                    longitudinalAberration: longitudinalAberration,
+                    focusPosition: focusZ,
+                    transverseAberration: transverseAberration,
+                    sineConditionViolation: sc  // null も許容
+                });
+            }
+        }
+        
+        // ストップ面での実際の最大高さで正規化（0から1の範囲）
+        // 注意: クロスビーム生成は物体側垂直面上で行われるため、
+        // ストップ面での実際の高さはstopRadiusと異なる場合がある
+        const maxMeridionalHeight = Math.max(...tempMeridionalPoints.map(p => p.pupilHeight));
+        
+        // 規格化瞳座標0.001の人工光線追加は異常値を生むため削除（実測データのみプロット）
+        
+        // 正規化してデータポイントを作成（SCは既に計算済み）
+        const meridionalPoints = tempMeridionalPoints.map(p => {
+            const normalizedPupil = maxMeridionalHeight > 0 ? p.pupilHeight / maxMeridionalHeight : 0;
+            
+            return {
+                pupilCoordinate: normalizedPupil,
+                longitudinalAberration: p.longitudinalAberration,
+                focusPosition: p.focusPosition,
+                stopHeight: p.pupilHeight,
+                transverseAberration: p.transverseAberration,
+                sineConditionViolation: p.sineConditionViolation
+            };
+        });
+        
+        // デバッグ: 正規化情報を確認
+        if (tempMeridionalPoints.length > 0) {
+            const maxNormalizedCoord = Math.max(...meridionalPoints.map(p => p.pupilCoordinate));
+            
+            console.log(`  メリジオナル最大pupil height: ${maxMeridionalHeight.toFixed(6)} mm`);
+            console.log(`  メリジオナル最大正規化座標: ${maxNormalizedCoord.toFixed(6)}`);
+            console.log(`  ストップ半径: ${stopRadius.toFixed(6)} mm`);
+            console.log(`  pupilHeight/stopRadius 比: ${(maxMeridionalHeight/stopRadius).toFixed(6)}`);
+        }
+        
+        meridionalPoints.sort((a, b) => a.pupilCoordinate - b.pupilCoordinate);
+        
+        // 重複する瞳座標を処理（同じ瞳座標の光線がある場合は平均値を使用）
+        const uniqueMeridionalPoints = [];
+        const threshold = 1e-6; // より小さい閾値を使用
+        let i = 0;
+        
+        while (i < meridionalPoints.length) {
+            const currentPoint = meridionalPoints[i];
+            const groupPoints = [currentPoint];
+            
+            // 同じ瞳座標のグループを収集
+            let j = i + 1;
+            while (j < meridionalPoints.length && 
+                   Math.abs(meridionalPoints[j].pupilCoordinate - currentPoint.pupilCoordinate) <= threshold) {
+                groupPoints.push(meridionalPoints[j]);
+                j++;
+            }
+            
+            // グループの平均値を計算
+            if (groupPoints.length === 1) {
+                uniqueMeridionalPoints.push(currentPoint);
+            } else {
+                const avgAberration = groupPoints.reduce((sum, p) => sum + p.longitudinalAberration, 0) / groupPoints.length;
+                const avgFocusZ = groupPoints.reduce((sum, p) => sum + p.focusPosition, 0) / groupPoints.length;
+                const avgTransverse = groupPoints.reduce((sum, p) => sum + p.transverseAberration, 0) / groupPoints.length;
+                
+                // SC の平均（null を除外）
+                const validSC = groupPoints.filter(p => p.sineConditionViolation !== null);
+                const avgSC = validSC.length > 0 
+                    ? validSC.reduce((sum, p) => sum + p.sineConditionViolation, 0) / validSC.length 
+                    : null;
+                
+                uniqueMeridionalPoints.push({
+                    pupilCoordinate: currentPoint.pupilCoordinate,
+                    longitudinalAberration: avgAberration,
+                    focusPosition: avgFocusZ,
+                    stopHeight: currentPoint.stopHeight,
+                    transverseAberration: avgTransverse,
+                    sineConditionViolation: avgSC
+                });
+            }
+            
+            i = j;
+        }
+
+        // 正規化瞳座標0.001の縦収差を補間で追加（実測データのみ使用）
+        insertInterpolatedPoint(uniqueMeridionalPoints, 0.001);
+        
+        meridionalData.push({
+            wavelength: wavelength,
+            rayType: 'meridional',
+            points: uniqueMeridionalPoints,
+            paraxialAberration: currentBFL - primaryBFL  // 近軸の縦収差（色収差成分）
+        });
+        
+        // サジタル光線の縦収差を計算
+        const sagittalRays = (aimedSagittalRays && aimedSagittalRays.length > 0)
+            ? aimedSagittalRays
+            : successfulRays.filter(r => r.originalRay && r.originalRay.type === 'horizontal_cross');
+        
+        // まず全ての光線の絞り面での高さを収集
+        const tempSagittalPoints = [];
+        for (let i = 0; i < sagittalRays.length; i++) {
+            const tracedRay = sagittalRays[i];
+            const focusZ = findRayAxisIntersection(tracedRay, imagePlaneZ);
+            
+            // 像面での横収差を計算
+            const transverseAb = calculateTransverseAberration(tracedRay, evaluationPlaneZ);
+            
+            // 軸上光線のため、SC計算はスキップ（物理的に意味がない）
+            // const sc = calculateSineConditionViolation(tracedRay, mParax, nObj, nImg);
+            const sc = null;
+            
+            if (focusZ !== null && transverseAb !== null && tracedRay.rayPath && tracedRay.rayPath.length > stopSurfaceIndex) {
+                // 縦収差 = 最終面からの距離（実際の焦点位置 - 最終面Z座標）
+                const longitudinalAberration = focusZ - lastSurfaceZ;
+                const stopPoint = tracedRay.rayPath[stopSurfaceIndex];
+                const pupilHeight = Math.abs(stopPoint.x); // 絶対値（0から1の範囲で表示）
+                
+                // 光軸上の光線（瞳高さ≈0）は球面収差図から除外
+                if (pupilHeight < 1e-6) {
+                    continue;
+                }
+                
+                // 横収差（サジタルなのでX方向）
+                const transverseAberration = transverseAb.x;
+                
+                tempSagittalPoints.push({
+                    pupilHeight: pupilHeight,
+                    longitudinalAberration: longitudinalAberration,
+                    focusPosition: focusZ,
+                    transverseAberration: transverseAberration,
+                    sineConditionViolation: sc  // null も許容
+                });
+            }
+        }
+        
+        // ストップ面での実際の最大高さで正規化（0から1の範囲）
+        const maxSagittalHeight = Math.max(...tempSagittalPoints.map(p => p.pupilHeight));
+        
+        // 正規化してデータポイントを作成（SCは既に計算済み）
+        const sagittalPoints = tempSagittalPoints.map(p => {
+            const normalizedPupil = maxSagittalHeight > 0 ? p.pupilHeight / maxSagittalHeight : 0;
+            
+            return {
+                pupilCoordinate: normalizedPupil,
+                longitudinalAberration: p.longitudinalAberration,
+                focusPosition: p.focusPosition,
+                stopHeight: p.pupilHeight,
+                transverseAberration: p.transverseAberration,
+                sineConditionViolation: p.sineConditionViolation
+            };
+        });
+        
+        // デバッグ: 正規化情報を確認
+        if (tempSagittalPoints.length > 0) {
+            const maxNormalizedCoord = Math.max(...sagittalPoints.map(p => p.pupilCoordinate));
+            console.log(`  サジタル最大pupil height: ${maxSagittalHeight.toFixed(6)} mm`);
+            console.log(`  サジタル最大正規化座標: ${maxNormalizedCoord.toFixed(6)}`);
+            console.log(`  ストップ半径: ${stopRadius.toFixed(6)} mm`);
+            console.log(`  pupilHeight/stopRadius 比: ${(maxSagittalHeight/stopRadius).toFixed(6)}`);
+        }
+        
+        sagittalPoints.sort((a, b) => a.pupilCoordinate - b.pupilCoordinate);
+        
+        // 重複する瞳座標を処理（同じ瞳座標の光線がある場合は平均値を使用）
+        const uniqueSagittalPoints = [];
+        let k = 0;
+        
+        while (k < sagittalPoints.length) {
+            const currentPoint = sagittalPoints[k];
+            const groupPoints = [currentPoint];
+            
+            // 同じ瞳座標のグループを収集
+            let m = k + 1;
+            while (m < sagittalPoints.length && 
+                   Math.abs(sagittalPoints[m].pupilCoordinate - currentPoint.pupilCoordinate) <= threshold) {
+                groupPoints.push(sagittalPoints[m]);
+                m++;
+            }
+            
+            // グループの平均値を計算
+            if (groupPoints.length === 1) {
+                uniqueSagittalPoints.push(currentPoint);
+            } else {
+                const avgAberration = groupPoints.reduce((sum, p) => sum + p.longitudinalAberration, 0) / groupPoints.length;
+                const avgFocusZ = groupPoints.reduce((sum, p) => sum + p.focusPosition, 0) / groupPoints.length;
+                const avgTransverse = groupPoints.reduce((sum, p) => sum + p.transverseAberration, 0) / groupPoints.length;
+                
+                // SC の平均（null を除外）
+                const validSC = groupPoints.filter(p => p.sineConditionViolation !== null);
+                const avgSC = validSC.length > 0 
+                    ? validSC.reduce((sum, p) => sum + p.sineConditionViolation, 0) / validSC.length 
+                    : null;
+                
+                uniqueSagittalPoints.push({
+                    pupilCoordinate: currentPoint.pupilCoordinate,
+                    longitudinalAberration: avgAberration,
+                    focusPosition: avgFocusZ,
+                    stopHeight: currentPoint.stopHeight,
+                    transverseAberration: avgTransverse,
+                    sineConditionViolation: avgSC
+                });
+            }
+            
+            k = m;
+        }
+
+        // 正規化瞳座標0.001の縦収差を補間で追加（実測データのみ使用）
+        insertInterpolatedPoint(uniqueSagittalPoints, 0.001);
+        
+        sagittalData.push({
+            wavelength: wavelength,
+            rayType: 'sagittal',
+            points: uniqueSagittalPoints,
+            paraxialAberration: currentBFL - primaryBFL  // 近軸の縦収差（色収差成分）
+        });
+    }
+    
+    const result = {
+        wavelengths: wavelengths,
+        targetSurface: targetSurfaceIndex,
+        isFiniteSystem: isFinite,
+        meridionalData: meridionalData,
+        sagittalData: sagittalData,
+        metadata: {
+            rayCount: rayCount,
+            imagePlaneZ: imagePlaneZ,
+            calculationType: 'spherical-aberration'
+        }
+    };
+    
+    console.log('✅ 球面収差計算完了');
+    return result;
+    } finally {
+        if (silent) {
+            console.log = prevLog;
+        }
+    }
+}
