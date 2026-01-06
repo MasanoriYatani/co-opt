@@ -29,7 +29,7 @@
     {
       "id": 2,
       "xHeightAngle": 0,
-      "yHeightAngle": 17.05,
+      "yHeightAngle": 17.08,
       "position": "Angle"
     }
   ],
@@ -1069,7 +1069,7 @@
   "systemRequirements": [
     {
       "id": 1,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1082,14 +1082,14 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 4.775614958555476,
-      "status": "OK",
+      "current": null,
+      "status": "—",
       "_violation": 0,
       "_contribution": 0
     },
     {
       "id": 2,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1102,14 +1102,14 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 2.123059029238483,
-      "status": "OK",
+      "current": null,
+      "status": "—",
       "_violation": 0,
       "_contribution": 0
     },
     {
       "id": 3,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1122,14 +1122,14 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 3.440277587963652,
-      "status": "OK",
+      "current": null,
+      "status": "—",
       "_violation": 0,
       "_contribution": 0
     },
     {
       "id": 4,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1142,14 +1142,14 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 4.869340787918367,
-      "status": "OK",
+      "current": null,
+      "status": "—",
       "_violation": 0,
       "_contribution": 0
     },
     {
       "id": 5,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1162,14 +1162,14 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 1.143755722916335,
-      "status": "OK",
+      "current": null,
+      "status": "—",
       "_violation": 0,
       "_contribution": 0
     },
     {
       "id": 6,
-      "enabled": true,
+      "enabled": false,
       "severity": "hard",
       "operand": "SPOT_SIZE_RECT",
       "rationale": "",
@@ -1182,7 +1182,27 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 3.1998454444756015,
+      "current": null,
+      "status": "—",
+      "_violation": 0,
+      "_contribution": 0
+    },
+    {
+      "id": 7,
+      "enabled": true,
+      "severity": "hard",
+      "operand": "",
+      "rationale": "",
+      "configId": "3",
+      "param1": "",
+      "param2": "",
+      "param3": "",
+      "param4": "",
+      "op": "=",
+      "tol": 0,
+      "target": 0,
+      "weight": 1,
+      "current": 0,
       "status": "OK",
       "_violation": 0,
       "_contribution": 0
@@ -1226,7 +1246,7 @@
           {
             "id": 2,
             "xHeightAngle": 0,
-            "yHeightAngle": 17.05,
+            "yHeightAngle": 17.08,
             "position": "Angle"
           }
         ],
@@ -2338,7 +2358,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:27:58.187Z",
-          "modified": "2026-01-05T13:49:42.886Z",
+          "modified": "2026-01-06T14:27:18.019Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -4085,7 +4105,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:28:51.847Z",
-          "modified": "2026-01-05T13:49:45.434Z",
+          "modified": "2026-01-06T14:27:05.765Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -5832,7 +5852,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:32:44.889Z",
-          "modified": "2026-01-05T13:49:47.123Z",
+          "modified": "2026-01-06T14:27:08.010Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -6441,7 +6461,7 @@
     "systemRequirements": [
       {
         "id": 1,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6454,14 +6474,14 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 4.775614958555476,
-        "status": "OK",
+        "current": null,
+        "status": "—",
         "_violation": 0,
         "_contribution": 0
       },
       {
         "id": 2,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6474,14 +6494,14 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 2.123059029238483,
-        "status": "OK",
+        "current": null,
+        "status": "—",
         "_violation": 0,
         "_contribution": 0
       },
       {
         "id": 3,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6494,14 +6514,14 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 3.440277587963652,
-        "status": "OK",
+        "current": null,
+        "status": "—",
         "_violation": 0,
         "_contribution": 0
       },
       {
         "id": 4,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6514,14 +6534,14 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 4.869340787918367,
-        "status": "OK",
+        "current": null,
+        "status": "—",
         "_violation": 0,
         "_contribution": 0
       },
       {
         "id": 5,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6534,14 +6554,14 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 1.143755722916335,
-        "status": "OK",
+        "current": null,
+        "status": "—",
         "_violation": 0,
         "_contribution": 0
       },
       {
         "id": 6,
-        "enabled": true,
+        "enabled": false,
         "severity": "hard",
         "operand": "SPOT_SIZE_RECT",
         "rationale": "",
@@ -6554,7 +6574,27 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 3.1998454444756015,
+        "current": null,
+        "status": "—",
+        "_violation": 0,
+        "_contribution": 0
+      },
+      {
+        "id": 7,
+        "enabled": true,
+        "severity": "hard",
+        "operand": "",
+        "rationale": "",
+        "configId": "3",
+        "param1": "",
+        "param2": "",
+        "param3": "",
+        "param4": "",
+        "op": "=",
+        "tol": 0,
+        "target": 0,
+        "weight": 1,
+        "current": 0,
         "status": "OK",
         "_violation": 0,
         "_contribution": 0
