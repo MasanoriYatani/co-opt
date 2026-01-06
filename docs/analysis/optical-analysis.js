@@ -1133,21 +1133,16 @@ export async function showIntegratedAberrationDiagram(options = {}) {
                 return n;
             };
 
+            // Legend/calc order should match Source table order.
             const rows = Array.isArray(sourceRows) ? sourceRows : [];
-            const parsed = rows
-                .map((row, idx) => ({
-                    idx,
-                    wl: normalizeUm(row?.wavelength),
-                    isPrimary: row?.primary === 'Primary Wavelength' || row?.primary === true || row?.primary === 'Primary'
-                }))
-                .filter(e => Number.isFinite(e.wl) && e.wl > 0)
-                .sort((a, b) => (Number(b.isPrimary) - Number(a.isPrimary)) || (a.idx - b.idx));
-
             const unique = [];
-            for (const e of parsed) {
-                if (!unique.some(w => Math.abs(w - e.wl) < 1e-12)) unique.push(e.wl);
+            for (const row of rows) {
+                const wl = normalizeUm(row?.wavelength);
+                if (!Number.isFinite(wl) || wl <= 0) continue;
+                if (!unique.some(w => Math.abs(w - wl) < 1e-12)) unique.push(wl);
+                if (unique.length >= 6) break;
             }
-            return unique.length > 0 ? unique.slice(0, 6) : fallback;
+            return unique.length > 0 ? unique : fallback;
         })();
         
         // 像面インデックスを取得
