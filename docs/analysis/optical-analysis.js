@@ -1119,7 +1119,36 @@ export async function showIntegratedAberrationDiagram(options = {}) {
         // Integrated Aberration Diagram の球面収差は固定で 20 本（Normalized Pupil を粗く分割して高速化）
         const rayCountSpherical = 20;
         const rayCountAstigmatism = 31;  // 非点収差用の光線数（計算時間を考慮）
-        const wavelengths = [0.4308, 0.5876, 0.6563];  // g, d, C線
+
+        // Wavelengths:
+        // - Prefer Source table wavelengths (μm). If the user entered nm (e.g. 587.6), normalize to μm.
+        // - Fallback to g/d/C lines when Source is empty.
+        const wavelengths = (() => {
+            const fallback = [0.4308, 0.5876, 0.6563];
+            const normalizeUm = (raw) => {
+                const n = Number(raw);
+                if (!Number.isFinite(n) || n <= 0) return null;
+                // Heuristic: values like 587.6 are nm; convert to μm.
+                if (n > 10) return n / 1000;
+                return n;
+            };
+
+            const rows = Array.isArray(sourceRows) ? sourceRows : [];
+            const parsed = rows
+                .map((row, idx) => ({
+                    idx,
+                    wl: normalizeUm(row?.wavelength),
+                    isPrimary: row?.primary === 'Primary Wavelength' || row?.primary === true || row?.primary === 'Primary'
+                }))
+                .filter(e => Number.isFinite(e.wl) && e.wl > 0)
+                .sort((a, b) => (Number(b.isPrimary) - Number(a.isPrimary)) || (a.idx - b.idx));
+
+            const unique = [];
+            for (const e of parsed) {
+                if (!unique.some(w => Math.abs(w - e.wl) < 1e-12)) unique.push(e.wl);
+            }
+            return unique.length > 0 ? unique.slice(0, 6) : fallback;
+        })();
         
         // 像面インデックスを取得
         const surfaceIndex = opticalSystemRows.length - 1;  // 最終面（像面）
