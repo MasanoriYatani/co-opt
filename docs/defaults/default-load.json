@@ -2419,11 +2419,12 @@
           },
           {
             "blockId": "AirGap-1",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.2
+              "thickness": 0.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2472,11 +2473,12 @@
           },
           {
             "blockId": "AirGap-2",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.5
+              "thickness": 0.5,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2525,11 +2527,12 @@
           },
           {
             "blockId": "AirGap-3",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 4.2
+              "thickness": 4.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2593,11 +2596,12 @@
           },
           {
             "blockId": "AirGap-4",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 34.12
+              "thickness": 34.12,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2661,11 +2665,12 @@
           },
           {
             "blockId": "AirGap-5",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 18.62
+              "thickness": 18.62,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2749,11 +2754,12 @@
           },
           {
             "blockId": "AirGap-6",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 1.95
+              "thickness": 1.95,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2802,11 +2808,12 @@
           },
           {
             "blockId": "AirGap-7",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 47.33
+              "thickness": 47.33,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2855,11 +2862,12 @@
           },
           {
             "blockId": "AirGap-8",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.3
+              "thickness": 0.3,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -2908,11 +2916,12 @@
           },
           {
             "blockId": "AirGap-9",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 42.682755
+              "thickness": 42.682755,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4157,11 +4166,12 @@
           },
           {
             "blockId": "AirGap-1",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.2
+              "thickness": 0.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4210,11 +4220,12 @@
           },
           {
             "blockId": "AirGap-2",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 32.54
+              "thickness": 32.54,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4263,11 +4274,12 @@
           },
           {
             "blockId": "AirGap-3",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 4.2
+              "thickness": 4.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4331,11 +4343,12 @@
           },
           {
             "blockId": "AirGap-4",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 17.63
+              "thickness": 17.63,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4399,11 +4412,12 @@
           },
           {
             "blockId": "AirGap-5",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 3.07
+              "thickness": 3.07,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4487,11 +4501,12 @@
           },
           {
             "blockId": "AirGap-6",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 1.95
+              "thickness": 1.95,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4540,11 +4555,12 @@
           },
           {
             "blockId": "AirGap-7",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 47.33
+              "thickness": 47.33,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4593,11 +4609,12 @@
           },
           {
             "blockId": "AirGap-8",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.3
+              "thickness": 0.3,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -4646,11 +4663,12 @@
           },
           {
             "blockId": "AirGap-9",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 42.682755
+              "thickness": 42.682755,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -5895,11 +5913,12 @@
           },
           {
             "blockId": "AirGap-1",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.2
+              "thickness": 0.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -5948,11 +5967,12 @@
           },
           {
             "blockId": "AirGap-2",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 43.86
+              "thickness": 43.86,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6001,11 +6021,12 @@
           },
           {
             "blockId": "AirGap-3",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 4.2
+              "thickness": 4.2,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6069,11 +6090,12 @@
           },
           {
             "blockId": "AirGap-4",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.68
+              "thickness": 0.68,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6137,11 +6159,12 @@
           },
           {
             "blockId": "AirGap-5",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 8.7
+              "thickness": 8.7,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6225,11 +6248,12 @@
           },
           {
             "blockId": "AirGap-6",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 1.95
+              "thickness": 1.95,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6278,11 +6302,12 @@
           },
           {
             "blockId": "AirGap-7",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 47.33
+              "thickness": 47.33,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6331,11 +6356,12 @@
           },
           {
             "blockId": "AirGap-8",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 0.3
+              "thickness": 0.3,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {
@@ -6384,11 +6410,12 @@
           },
           {
             "blockId": "AirGap-9",
-            "blockType": "AirGap",
+            "blockType": "Gap",
             "role": null,
             "constraints": {},
             "parameters": {
-              "thickness": 42.682755
+              "thickness": 42.682755,
+              "material": "AIR"
             },
             "variables": {},
             "metadata": {

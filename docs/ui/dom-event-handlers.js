@@ -1433,7 +1433,7 @@ function setupClearStorageButton() {
 
                             const issues = [];
                             const countBlocksByType = (blocks) => {
-                                const out = { Lens: 0, Doublet: 0, Triplet: 0, AirGap: 0, Stop: 0, ImagePlane: 0, Other: 0 };
+                                const out = { Lens: 0, Doublet: 0, Triplet: 0, Gap: 0, AirGap: 0, Stop: 0, ImagePlane: 0, Other: 0 };
                                 if (!Array.isArray(blocks)) return out;
                                 for (const b of blocks) {
                                     const t = String(b?.blockType ?? '');
@@ -5344,7 +5344,7 @@ function __blocks_normalizeProvenanceBlockType(raw) {
     if (key === 'doublet' || key === 'cementeddoublet') return 'Doublet';
     if (key === 'triplet' || key === 'cementedtriplet') return 'Triplet';
     if (key === 'stop' || key === 'aperturestop' || key === 'aperture') return 'Stop';
-    if (key === 'airgap' || key === 'space' || key === 'air') return 'AirGap';
+    if (key === 'gap' || key === 'airgap' || key === 'space' || key === 'air') return 'Gap';
     if (key === 'imageplane' || key === 'image') return 'ImagePlane';
     return s;
 }
@@ -5395,9 +5395,12 @@ function __blocks_findFollowingAirGapBlockId(ownerBlockId) {
             if (!b || typeof b !== 'object') continue;
             if (String(b.blockId ?? '').trim().toLowerCase() !== id) continue;
             const next = blocks[i + 1];
-            if (next && typeof next === 'object' && String(next.blockType ?? '').trim() === 'AirGap') {
-                const nextId = String(next.blockId ?? '').trim();
-                return nextId || null;
+            if (next && typeof next === 'object') {
+                const nt = String(next.blockType ?? '').trim();
+                if (nt === 'Gap' || nt === 'AirGap') {
+                    const nextId = String(next.blockId ?? '').trim();
+                    return nextId || null;
+                }
             }
             return null;
         }
@@ -5421,23 +5424,24 @@ function __blocks_autoCreateFollowingAirGap(ownerBlockId, thickness) {
         const blocks = activeCfg && Array.isArray(activeCfg.blocks) ? activeCfg.blocks : null;
         console.log(`   [DEBUG] blocks=`, blocks ? `array[${blocks.length}]` : 'null');
         if (!activeCfg || !blocks || blocks.length === 0) {
-            console.error('   Cannot auto-create AirGap: activeCfg/blocks not found');
+            console.error('   Cannot auto-create Gap: activeCfg/blocks not found');
             return null;
         }
 
-        // Generate unique AirGap ID
+        // Generate unique Gap ID (legacy: AirGap-*)
         let maxNum = 0;
         for (const b of blocks) {
-            if (b && b.blockType === 'AirGap' && b.blockId) {
-                const m = /^AirGap-(\d+)$/i.exec(String(b.blockId).trim());
-                if (m) {
-                    const num = Number(m[1]);
-                    if (Number.isFinite(num) && num > maxNum) maxNum = num;
-                }
-            }
+            if (!b || typeof b !== 'object' || !b.blockId) continue;
+            const bt = String(b.blockType ?? '').trim();
+            if (!(bt === 'Gap' || bt === 'AirGap')) continue;
+            const idRaw = String(b.blockId).trim();
+            const m = /^(?:Gap|AirGap)-(\d+)$/i.exec(idRaw);
+            if (!m) continue;
+            const num = Number(m[1]);
+            if (Number.isFinite(num) && num > maxNum) maxNum = num;
         }
-        const newAirGapId = `AirGap-${maxNum + 1}`;
-        console.log(`   [DEBUG] Generated newAirGapId=${newAirGapId}`);
+        const newGapId = `Gap-${maxNum + 1}`;
+        console.log(`   [DEBUG] Generated newGapId=${newGapId}`);
 
         // Find insertion index
         const id = String(ownerBlockId ?? '').trim().toLowerCase();
@@ -5450,26 +5454,27 @@ function __blocks_autoCreateFollowingAirGap(ownerBlockId, thickness) {
         }
         console.log(`   [DEBUG] insertIndex=${insertIndex}`);
         if (insertIndex < 0) {
-            console.error(`   Cannot auto-create AirGap: owner block ${ownerBlockId} not found`);
+            console.error(`   Cannot auto-create Gap: owner block ${ownerBlockId} not found`);
             return null;
         }
 
-        // Create new AirGap block
-        const newAirGap = {
-            blockId: newAirGapId,
-            blockType: 'AirGap',
+        // Create new Gap block
+        const newGap = {
+            blockId: newGapId,
+            blockType: 'Gap',
             role: null,
             constraints: {},
             parameters: {
-                thickness: thickness
+                thickness: thickness,
+                material: 'AIR'
             },
             variables: {},
             metadata: { source: 'auto-create', after: String(ownerBlockId ?? '') }
         };
-        console.log(`   [DEBUG] Created newAirGap object:`, newAirGap);
+        console.log(`   [DEBUG] Created newGap object:`, newGap);
 
         // Insert into blocks array
-        blocks.splice(insertIndex, 0, newAirGap);
+        blocks.splice(insertIndex, 0, newGap);
         console.log(`   [DEBUG] Inserted into blocks array at index ${insertIndex}`);
 
         // Persist to localStorage
@@ -5481,8 +5486,8 @@ function __blocks_autoCreateFollowingAirGap(ownerBlockId, thickness) {
             console.error('   Failed to persist auto-created AirGap to localStorage:', err);
         }
 
-        console.log(`   ✅ Auto-created ${newAirGapId} with thickness=${thickness} after ${ownerBlockId}`);
-        return newAirGapId;
+        console.log(`   ✅ Auto-created ${newGapId} with thickness=${thickness} after ${ownerBlockId}`);
+        return newGapId;
     } catch (err) {
         console.error('   Error in __blocks_autoCreateFollowingAirGap:', err);
         return null;
@@ -5603,9 +5608,13 @@ function formatBlockPreview(block) {
         return parts.join(' ');
     }
 
-    if (type === 'AirGap') {
+    if (type === 'Gap' || type === 'AirGap') {
         const th = pick('thickness');
-        return String(th) !== '' ? `T=${String(th)}` : '';
+        const mat = pick('material');
+        const parts = [];
+        if (String(th) !== '') parts.push(`T=${String(th)}`);
+        if (String(mat) !== '' && String(mat).trim().toUpperCase() !== 'AIR') parts.push(`M=${String(mat)}`);
+        return parts.join(' ');
     }
 
     if (type === 'ObjectPlane') {
@@ -5697,8 +5706,9 @@ function __blocks_makeDefaultBlock(blockType, blockId) {
         };
         return base;
     }
-    if (type === 'AirGap') {
-        base.parameters = { thickness: 1 };
+    if (type === 'Gap' || type === 'AirGap') {
+        base.blockType = 'Gap';
+        base.parameters = { thickness: 1, material: 'AIR' };
         return base;
     }
     if (type === 'ObjectPlane') {
@@ -6385,8 +6395,9 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                         for (let k = 1; k <= 10; k++) items.push({ key: `surf${si}Coef${k}`, label: `surf${si}Coef${k}` });
                     }
                 }
-            } else if (blockType === 'AirGap') {
+            } else if (blockType === 'Gap' || blockType === 'AirGap') {
                 items.push({ key: 'thickness', label: 'thickness' });
+                items.push({ key: 'material', label: 'material' });
             } else if (blockType === 'Stop') {
                 // UX alias: the surface table uses "semidia"; Blocks store it as Stop.parameters.semiDiameter.
                 items.push({ key: 'semiDiameter', label: 'semidia' });

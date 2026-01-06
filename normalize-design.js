@@ -60,7 +60,8 @@ function normalizeBlockType(rawType) {
     .toLowerCase();
 
   if (key === 'positivelens' || key === 'lens' || key === 'singlet') return 'Lens';
-  if (key === 'airgap' || key === 'air' || key === 'space' || key === 'freespace') return 'AirGap';
+  // Gap (legacy alias: AirGap)
+  if (key === 'gap' || key === 'airgap' || key === 'air' || key === 'space' || key === 'freespace') return 'Gap';
   if (key === 'stop' || key === 'aperturestop' || key === 'aperture') return 'Stop';
   if (key === 'imageplane' || key === 'image' || key === 'image_surface' || key === 'imagesurface') return 'ImagePlane';
   return t;

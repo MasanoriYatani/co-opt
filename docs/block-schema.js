@@ -419,11 +419,11 @@ export function validateBlocksConfiguration(config) {
     }
 
     const blockType = block.blockType;
-    if (blockType !== 'ObjectPlane' && blockType !== 'Lens' && blockType !== 'PositiveLens' && blockType !== 'Doublet' && blockType !== 'Triplet' && blockType !== 'AirGap' && blockType !== 'Stop' && blockType !== 'ImagePlane') {
+    if (blockType !== 'ObjectPlane' && blockType !== 'Lens' && blockType !== 'PositiveLens' && blockType !== 'Doublet' && blockType !== 'Triplet' && blockType !== 'Gap' && blockType !== 'AirGap' && blockType !== 'Stop' && blockType !== 'ImagePlane') {
       issues.push({
         severity: 'fatal',
         phase: 'validate',
-        message: `Unsupported blockType: ${blockType} (MVP supports ObjectPlane, Lens, Doublet, Triplet, AirGap, Stop, ImagePlane only).`,
+        message: `Unsupported blockType: ${blockType} (MVP supports ObjectPlane, Lens, Doublet, Triplet, Gap, Stop, ImagePlane only).`,
         blockId: block.blockId
       });
       continue;
@@ -635,11 +635,24 @@ export function validateBlocksConfiguration(config) {
       }
     }
 
-    if (blockType === 'AirGap') {
+    if (blockType === 'Gap' || blockType === 'AirGap') {
       const thickness = getParamOrVarValue(parameters, variables, 'thickness');
       if (thickness === undefined) {
-        issues.push({ severity: 'fatal', phase: 'validate', message: 'AirGap.thickness is required.', blockId: block.blockId });
+        issues.push({ severity: 'fatal', phase: 'validate', message: 'Gap.thickness is required.', blockId: block.blockId });
       }
+
+      // Optional: Gap.material (AIR or a glass name). Default is AIR (n≈1).
+      const materialRaw = getParamOrVarValue(parameters, variables, 'material');
+      const material = String(materialRaw ?? '').trim();
+      const matKey = material.replace(/\s+/g, '').toUpperCase();
+      if (material !== '' && matKey !== 'AIR') {
+        if (__isNumericMaterialName(material)) {
+          issues.push({ severity: 'warning', phase: 'validate', message: `Gap.material is numeric (${material}). Treated as synthetic glass; dispersion may be inaccurate.`, blockId: block.blockId });
+        } else if (!isKnownGlassNameOnly(material)) {
+          issues.push({ severity: 'warning', phase: 'validate', message: `Unknown glass name (allowed for imported/legacy designs): ${material}`, blockId: block.blockId });
+        }
+      }
+
       // Warn if optimize mode is not V
       if (isPlainObject(variables) && isPlainObject(variables.thickness) && isPlainObject(variables.thickness.optimize)) {
         const mode = variables.thickness.optimize.mode;
@@ -647,7 +660,7 @@ export function validateBlocksConfiguration(config) {
           issues.push({
             severity: 'warning',
             phase: 'validate',
-            message: `AirGap.variables.thickness.optimize.mode=${String(mode)} is not supported yet; treating as fixed.`,
+            message: `Gap.variables.thickness.optimize.mode=${String(mode)} is not supported yet; treating as fixed.`,
             blockId: block.blockId
           });
         }
@@ -679,8 +692,8 @@ export function validateBlocksConfiguration(config) {
     }
   }
 
-  // Ordering rules (MVP): AirGap attaches spacing to the previous physical surface.
-  // AirGap is stored as a block but expands onto the previous surface row's thickness.
+  // Ordering rules (MVP): Gap attaches spacing/medium to the previous physical surface.
+  // Gap is stored as a block but expands onto the previous surface row's thickness/material.
   // This includes Stop rows (Stop is still a surface in the expanded table).
 
   return issues;
@@ -1158,12 +1171,12 @@ export function expandBlocksToOpticalSystemRows(blocks) {
       continue;
     }
 
-    if (type === 'AirGap') {
+    if (type === 'Gap' || type === 'AirGap') {
       if (rows.length <= 1) {
         issues.push({
           severity: 'fatal',
           phase: 'expand',
-          message: 'AirGap cannot appear before any surface (no previous surface to attach thickness to).',
+          message: 'Gap cannot appear before any surface (no previous surface to attach thickness/material to).',
           blockId,
           surfaceIndex: 0
         });
@@ -1176,7 +1189,7 @@ export function expandBlocksToOpticalSystemRows(blocks) {
         issues.push({
           severity: 'fatal',
           phase: 'expand',
-          message: 'AirGap cannot modify the Image surface.',
+          message: 'Gap cannot modify the Image surface.',
           blockId,
           surfaceIndex: typeof prev.id === 'number' ? prev.id : undefined
         });
@@ -1185,8 +1198,18 @@ export function expandBlocksToOpticalSystemRows(blocks) {
 
       const thickness = getParamOrVarValue(params, vars, 'thickness');
       prev.thickness = normalizeThicknessToRowValue(thickness);
+
+      const matRaw = getParamOrVarValue(params, vars, 'material');
+      const mat = String(matRaw ?? '').trim();
+      const matKey = mat.replace(/\s+/g, '').toUpperCase();
+      prev.material = (mat === '' || matKey === 'AIR') ? 'AIR' : mat;
+      applyDerivedGlassDisplay(prev);
+
       if (vars && Object.prototype.hasOwnProperty.call(vars, 'thickness') && shouldMarkV(vars.thickness)) {
         applyVFlag(prev, 'optimizeT');
+      }
+      if (vars && Object.prototype.hasOwnProperty.call(vars, 'material') && shouldMarkV(vars.material)) {
+        applyVFlag(prev, 'optimizeMaterial');
       }
       continue;
     }
@@ -1246,9 +1269,9 @@ export function expandBlocksToOpticalSystemRows(blocks) {
  * This enables legacy (no-blocks) designs to enter the Blocks workflow.
  *
  * Supported (MVP):
- * - Stop rows -> Stop block (spacing after Stop is converted into an AirGap block)
+ * - Stop rows -> Stop block (spacing after Stop is converted into a Gap block)
  * - A lens is detected as: a non-Stop row with material != AIR followed by a row with material == AIR
- *   (front row thickness becomes centerThickness; back row thickness becomes an AirGap block)
+ *   (front row thickness becomes centerThickness; back row thickness becomes a Gap block)
  * - ImagePlane marker is always appended.
  *
  * @param {any[]} rows legacy OpticalSystemTableData-like rows
@@ -1363,16 +1386,19 @@ export function deriveBlocksFromLegacyOpticalSystemRows(rows) {
         metadata: { source: 'legacy-opticalSystem' }
       });
 
-      // Preserve spacing after Stop as an AirGap block (AirGap attaches to the previous surface on expand).
+      // Preserve spacing after Stop as a Gap block (Gap attaches to the previous surface on expand).
       const t = asNumberOrInfOrZero(r.thickness);
       if ((typeof t === 'number' && Math.abs(t) > 1e-12) || t === 'INF') {
         gapCount++;
+        const mRaw = normalizeMaterialName(r.material);
+        const mKey = mRaw.replace(/\s+/g, '').toUpperCase();
+        const gapMat = (mRaw === '' || mKey === 'AIR') ? 'AIR' : mRaw;
         blocks.push({
-          blockId: `AirGap-${gapCount}`,
-          blockType: 'AirGap',
+          blockId: `Gap-${gapCount}`,
+          blockType: 'Gap',
           role: null,
           constraints: {},
-          parameters: { thickness: t },
+          parameters: { thickness: t, material: gapMat },
           variables: legacyHasV(r, 'optimizeT') ? { thickness: legacyVarV(t) } : {},
           metadata: { source: 'legacy-opticalSystem', from: 'Stop.thickness', rowIndex: i }
         });
@@ -1533,17 +1559,21 @@ export function deriveBlocksFromLegacyOpticalSystemRows(rows) {
           metadata: { source: 'legacy-opticalSystem' }
         });
 
-        // Spacing after the last surface becomes an AirGap block.
+        // Spacing after the last surface becomes a Gap block.
         const lastSurf = chain[2];
         const gapT = asNumberOrInfOrZero(lastSurf.thickness);
         if ((typeof gapT === 'number' && Math.abs(gapT) > 1e-12) || gapT === 'INF') {
           gapCount++;
+          const mRaw = normalizeMaterialName(lastSurf.material);
+          const mKey = mRaw.replace(/\s+/g, '').toUpperCase();
+          const gKeys = new Set(glasses.map(g => String(g ?? '').replace(/\s+/g, '').toUpperCase()).filter(Boolean));
+          const gapMat = (mRaw === '' || mKey === 'AIR' || gKeys.has(mKey)) ? 'AIR' : mRaw;
           blocks.push({
-            blockId: `AirGap-${gapCount}`,
-            blockType: 'AirGap',
+            blockId: `Gap-${gapCount}`,
+            blockType: 'Gap',
             role: null,
             constraints: {},
-            parameters: { thickness: gapT },
+            parameters: { thickness: gapT, material: gapMat },
             variables: legacyHasV(lastSurf, 'optimizeT') ? { thickness: legacyVarV(gapT) } : {},
             metadata: { source: 'legacy-opticalSystem' }
           });
@@ -1592,12 +1622,16 @@ export function deriveBlocksFromLegacyOpticalSystemRows(rows) {
         const gapT = asNumberOrInfOrZero(lastSurf.thickness);
         if ((typeof gapT === 'number' && Math.abs(gapT) > 1e-12) || gapT === 'INF') {
           gapCount++;
+          const mRaw = normalizeMaterialName(lastSurf.material);
+          const mKey = mRaw.replace(/\s+/g, '').toUpperCase();
+          const gKeys = new Set(glasses.map(g => String(g ?? '').replace(/\s+/g, '').toUpperCase()).filter(Boolean));
+          const gapMat = (mRaw === '' || mKey === 'AIR' || gKeys.has(mKey)) ? 'AIR' : mRaw;
           blocks.push({
-            blockId: `AirGap-${gapCount}`,
-            blockType: 'AirGap',
+            blockId: `Gap-${gapCount}`,
+            blockType: 'Gap',
             role: null,
             constraints: {},
-            parameters: { thickness: gapT },
+            parameters: { thickness: gapT, material: gapMat },
             variables: legacyHasV(lastSurf, 'optimizeT') ? { thickness: legacyVarV(gapT) } : {},
             metadata: { source: 'legacy-opticalSystem' }
           });
@@ -1672,16 +1706,20 @@ export function deriveBlocksFromLegacyOpticalSystemRows(rows) {
       metadata: { source: 'legacy-opticalSystem' }
     });
 
-    // Spacing after the lens back surface becomes an AirGap block.
+    // Spacing after the lens back surface becomes a Gap block.
     const gapT = asNumberOrInfOrZero(back.thickness);
     if ((typeof gapT === 'number' && Math.abs(gapT) > 1e-12) || gapT === 'INF') {
       gapCount++;
+      const bmRaw = normalizeMaterialName(back.material);
+      const bmKey = bmRaw.replace(/\s+/g, '').toUpperCase();
+      const matKey = String(material ?? '').trim().replace(/\s+/g, '').toUpperCase();
+      const gapMat = (bmRaw === '' || bmKey === 'AIR' || bmKey === matKey) ? 'AIR' : bmRaw;
       blocks.push({
-        blockId: `AirGap-${gapCount}`,
-        blockType: 'AirGap',
+        blockId: `Gap-${gapCount}`,
+        blockType: 'Gap',
         role: null,
         constraints: {},
-        parameters: { thickness: gapT },
+        parameters: { thickness: gapT, material: gapMat },
         variables: legacyHasV(back, 'optimizeT') ? { thickness: legacyVarV(gapT) } : {},
         metadata: { source: 'legacy-opticalSystem' }
       });
