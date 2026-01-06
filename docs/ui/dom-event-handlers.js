@@ -15,6 +15,7 @@ import { tableObject } from '../table-object.js';
 import { tableOpticalSystem } from '../table-optical-system.js';
 import { debugWASMSystem, quickWASMComparison } from '../debug/debug-utils.js';
 import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows, deriveBlocksFromLegacyOpticalSystemRows } from '../block-schema.js';
+import { calculateBackFocalLength, calculateImageDistance } from '../ray-paraxial.js';
 import { getGlassDataWithSellmeier, findSimilarGlassesByNdVd, findSimilarGlassNames } from '../glass.js';
 import { normalizeDesign } from '../normalize-design.js';
 
@@ -5708,7 +5709,7 @@ function __blocks_makeDefaultBlock(blockType, blockId) {
     }
     if (type === 'Gap' || type === 'AirGap') {
         base.blockType = 'Gap';
-        base.parameters = { thickness: 1, material: 'AIR' };
+        base.parameters = { thickness: 1, material: 'AIR', thicknessMode: '' };
         return base;
     }
     if (type === 'ObjectPlane') {
@@ -5723,8 +5724,12 @@ function __blocks_makeDefaultBlock(blockType, blockId) {
         return base;
     }
     if (type === 'ImagePlane') {
-        // Marker block: no parameters/variables required.
-        delete base.parameters;
+        // Optional parameters supported: semidia + optimizeSemiDia.
+        base.parameters = {
+            semidia: '',
+            optimizeSemiDia: ''
+        };
+        // Keep variables absent (ImagePlane is not a design variable).
         delete base.variables;
         return base;
     }
@@ -5880,6 +5885,13 @@ function __blocks_coerceParamValue(blockType, key, raw) {
     // Allow blank to mean "unset" for optional fields.
     if (s === '') return '';
 
+    // Special-case: ImagePlane.optimizeSemiDia uses a single-letter token 'A'
+    // (not the generic 'AUTO' token used elsewhere).
+    if (String(key ?? '') === 'optimizeSemiDia') {
+        if (/^(a|auto|u)$/i.test(s)) return 'A';
+        return s;
+    }
+
     // Common tokens
     if (/^inf(inity)?$/i.test(s)) return 'INF';
     if (/^(a|auto|u)$/i.test(s)) return 'AUTO';
@@ -5949,6 +5961,137 @@ function __blocks_setBlockParamValue(blockId, key, rawValue) {
     }
 
     return { ok: true };
+}
+
+function __blocks_setBlockParamValueAllConfigs(blockId, key, rawValue) {
+    const systemConfig = (typeof loadSystemConfigurations === 'function') ? loadSystemConfigurations() : null;
+    if (!systemConfig || !Array.isArray(systemConfig.configurations)) return { ok: false, reason: 'systemConfigurations not found.' };
+
+    const id = String(blockId ?? '').trim();
+    const k = String(key ?? '').trim();
+    if (!id) return { ok: false, reason: 'blockId is required.' };
+    if (!k) return { ok: false, reason: 'key is required.' };
+
+    /** @type {Array<{configId:string, configName?:string}>} */
+    const missing = [];
+    /** @type {Map<string, any>} */
+    const prevByConfigId = new Map();
+
+    try {
+        for (const cfg of (systemConfig.configurations || [])) {
+            if (!cfg || !Array.isArray(cfg.blocks)) {
+                missing.push({ configId: String(cfg?.id ?? '(none)'), configName: cfg?.name });
+                continue;
+            }
+            const b = cfg.blocks.find(x => x && String(x.blockId ?? '') === id);
+            if (!b) {
+                missing.push({ configId: String(cfg?.id ?? '(none)'), configName: cfg?.name });
+                continue;
+            }
+            if (!b.parameters || typeof b.parameters !== 'object') b.parameters = {};
+            const prev = b.parameters[k];
+            const coerced = __blocks_coerceParamValue(String(b.blockType ?? ''), k, rawValue);
+            b.parameters[k] = coerced;
+            prevByConfigId.set(String(cfg?.id ?? ''), prev);
+        }
+    } catch (e) {
+        return { ok: false, reason: `failed to apply: ${e?.message || String(e)}` };
+    }
+
+    if (missing.length > 0) {
+        try {
+            for (const cfg of (systemConfig.configurations || [])) {
+                if (!cfg || !Array.isArray(cfg.blocks)) continue;
+                const b = cfg.blocks.find(x => x && String(x.blockId ?? '') === id);
+                if (!b || !b.parameters || typeof b.parameters !== 'object') continue;
+                const cid = String(cfg?.id ?? '');
+                if (prevByConfigId.has(cid)) b.parameters[k] = prevByConfigId.get(cid);
+            }
+        } catch (_) {}
+        return {
+            ok: false,
+            reason: `Cannot apply to all configs because block is missing: ${id}.${k} / missing in ${missing.length} config(s)`
+        };
+    }
+
+    try {
+        for (const cfg of (systemConfig.configurations || [])) {
+            if (!cfg || !Array.isArray(cfg.blocks)) continue;
+            const issues = validateBlocksConfiguration(cfg);
+            const fatals = issues.filter(i => i && i.severity === 'fatal');
+            if (fatals.length > 0) {
+                try {
+                    for (const cfg2 of (systemConfig.configurations || [])) {
+                        if (!cfg2 || !Array.isArray(cfg2.blocks)) continue;
+                        const cid2 = String(cfg2?.id ?? '');
+                        if (!prevByConfigId.has(cid2)) continue;
+                        const b2 = cfg2.blocks.find(x => x && String(x.blockId ?? '') === id);
+                        if (!b2 || !b2.parameters || typeof b2.parameters !== 'object') continue;
+                        b2.parameters[k] = prevByConfigId.get(cid2);
+                    }
+                } catch (_) {}
+                try { showLoadErrors(issues, { filename: '(systemConfigurations)' }); } catch (_) {}
+                return { ok: false, reason: 'block validation failed.' };
+            }
+        }
+    } catch (_) {}
+
+    try {
+        for (const cfg of (systemConfig.configurations || [])) {
+            if (!cfg) continue;
+            if (!cfg.metadata || typeof cfg.metadata !== 'object') cfg.metadata = {};
+            cfg.metadata.modified = new Date().toISOString();
+        }
+    } catch (_) {}
+
+    try {
+        if (typeof saveSystemConfigurations === 'function') {
+            saveSystemConfigurations(systemConfig);
+        } else if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('systemConfigurations', JSON.stringify(systemConfig));
+        }
+    } catch (e) {
+        return { ok: false, reason: `failed to save: ${e?.message || String(e)}` };
+    }
+
+    return { ok: true };
+}
+
+function __blocks_getSystemRequirementsData() {
+    try {
+        if (window.systemRequirementsEditor && typeof window.systemRequirementsEditor.getData === 'function') {
+            const d = window.systemRequirementsEditor.getData();
+            if (Array.isArray(d)) return d;
+        }
+    } catch (_) {}
+    try {
+        const json = (typeof localStorage !== 'undefined') ? localStorage.getItem('systemRequirementsData') : null;
+        const d = json ? JSON.parse(json) : null;
+        return Array.isArray(d) ? d : [];
+    } catch (_) {}
+    try {
+        const systemConfig = (typeof loadSystemConfigurations === 'function') ? loadSystemConfigurations() : null;
+        if (systemConfig && Array.isArray(systemConfig.systemRequirements)) return systemConfig.systemRequirements;
+    } catch (_) {}
+    return [];
+}
+
+function __blocks_findRequirementTarget(operand, configId) {
+    const op = String(operand ?? '').trim().toUpperCase();
+    const cid = String(configId ?? '').trim();
+    const reqs = __blocks_getSystemRequirementsData();
+    for (const r of (reqs || [])) {
+        if (!r || typeof r !== 'object') continue;
+        if (r.enabled === false || String(r.enabled ?? '').trim().toLowerCase() === 'false') continue;
+        const rop = String(r.operand ?? '').trim().toUpperCase();
+        if (rop !== op) continue;
+        const rcid = String(r.configId ?? '').trim();
+        if (rcid !== '' && cid !== '' && rcid !== cid) continue;
+        const tRaw = r.target;
+        const n = (typeof tRaw === 'number') ? tRaw : Number(String(tRaw ?? '').trim());
+        if (Number.isFinite(n)) return n;
+    }
+    return null;
 }
 
 function __blocks_coerceApertureValue(raw) {
@@ -6080,6 +6223,19 @@ function __blocks_setVarMode(blockId, key, enabled, scope = 'perConfig') {
             ? (systemConfig.configurations || [])
             : [systemConfig.configurations.find(c => c && c.id === activeId) || systemConfig.configurations[0]];
 
+        let sharedNumericValue = null;
+        if (enabled && scope === 'global') {
+            try {
+                const activeCfg0 = systemConfig.configurations.find(c => c && c.id === activeId);
+                const b0 = activeCfg0 && Array.isArray(activeCfg0.blocks)
+                    ? activeCfg0.blocks.find(x => x && String(x.blockId ?? '') === String(blockId))
+                    : null;
+                const raw0 = b0?.parameters?.[key] ?? b0?.variables?.[key]?.value;
+                const n0 = (typeof raw0 === 'number') ? raw0 : Number(String(raw0 ?? '').trim());
+                if (Number.isFinite(n0)) sharedNumericValue = n0;
+            } catch (_) {}
+        }
+
         for (const cfg of targets) {
             if (!cfg || !Array.isArray(cfg.blocks)) {
                 missing.push({ configId: String(cfg?.id ?? '(none)'), configName: cfg?.name });
@@ -6096,6 +6252,16 @@ function __blocks_setVarMode(blockId, key, enabled, scope = 'perConfig') {
             if (!b.variables[key].optimize || typeof b.variables[key].optimize !== 'object') b.variables[key].optimize = {};
             b.variables[key].optimize.mode = enabled ? 'V' : 'F';
             b.variables[key].optimize.scope = (scope === 'global') ? 'global' : 'perConfig';
+
+            if (sharedNumericValue !== null && scope === 'global') {
+                try {
+                    if (!b.parameters || typeof b.parameters !== 'object') b.parameters = {};
+                    b.parameters[key] = sharedNumericValue;
+                    if (b.variables[key] && typeof b.variables[key] === 'object' && Object.prototype.hasOwnProperty.call(b.variables[key], 'value')) {
+                        b.variables[key].value = sharedNumericValue;
+                    }
+                } catch (_) {}
+            }
         }
 
         __blocks_lastScopeErrors = missing.length > 0
@@ -6396,16 +6562,38 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                     }
                 }
             } else if (blockType === 'Gap' || blockType === 'AirGap') {
+                // Only show thicknessMode for the last Gap before ImagePlane.
+                try {
+                    const blocks = Array.isArray(blocksInOrder) ? blocksInOrder : [];
+                    const myIdx = blocks.findIndex(b => b && String(b.blockId ?? '') === String(blockId));
+                    const imgIdx = blocks.findIndex(b => b && String(b.blockType ?? '') === 'ImagePlane');
+                    let isPreImageGap = false;
+                    if (myIdx >= 0 && imgIdx > myIdx) {
+                        isPreImageGap = true;
+                        for (let k = myIdx + 1; k < imgIdx; k++) {
+                            const bt = String(blocks[k]?.blockType ?? '');
+                            if (bt === 'Gap' || bt === 'AirGap') { isPreImageGap = false; break; }
+                        }
+                    }
+                    if (isPreImageGap) {
+                        items.push({ kind: 'gapThicknessMode', key: 'thicknessMode', label: 'thickness (IMD/BFL)', noOptimize: true });
+                    }
+                } catch (_) {}
                 items.push({ key: 'thickness', label: 'thickness' });
                 items.push({ key: 'material', label: 'material' });
             } else if (blockType === 'Stop') {
                 // UX alias: the surface table uses "semidia"; Blocks store it as Stop.parameters.semiDiameter.
                 items.push({ key: 'semiDiameter', label: 'semidia' });
+            } else if (blockType === 'ImagePlane') {
+                items.push({ kind: 'imageSemiDiaMode', key: 'optimizeSemiDia', label: 'auto semidia (chief ray)', noOptimize: true });
+                items.push({ key: 'semidia', label: 'semidia', noOptimize: true });
             }
             for (const it of items) {
                 const isApertureItem = it && typeof it === 'object' && String(it.kind ?? '') === 'aperture';
                 const isObjectModeItem = !isApertureItem && it && typeof it === 'object' && String(it.kind ?? '') === 'objectMode';
                 const isObjectDistanceItem = !isApertureItem && it && typeof it === 'object' && String(it.kind ?? '') === 'objectDistance';
+                const isImageSemiDiaModeItem = !isApertureItem && it && typeof it === 'object' && String(it.kind ?? '') === 'imageSemiDiaMode';
+                const isGapThicknessModeItem = !isApertureItem && it && typeof it === 'object' && String(it.kind ?? '') === 'gapThicknessMode';
                 const isSurfTypeItem = !isApertureItem && it && typeof it === 'object' && typeof it.key === 'string' && /surftype$/i.test(String(it.key));
                 const isMaterialItem = !isApertureItem && it && typeof it === 'object' && typeof it.key === 'string' && /^material\d*$/i.test(String(it.key));
                 const allowOptimize = !isApertureItem && !(it && typeof it === 'object' && it.noOptimize);
@@ -6485,7 +6673,7 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                 };
 
                 let valueEl;
-                if (isObjectModeItem) {
+                if (isObjectModeItem || isImageSemiDiaModeItem || isGapThicknessModeItem) {
                     const sel = document.createElement('select');
                     sel.style.flex = '0 0 180px';
                     sel.style.fontSize = '12px';
@@ -6493,17 +6681,124 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                     sel.style.border = '1px solid #ddd';
                     sel.style.borderRadius = '4px';
                     sel.addEventListener('click', (e) => e.stopPropagation());
-                    sel.innerHTML = [
-                        '<option value="Finite">Finite</option>',
-                        '<option value="INF">INF</option>'
-                    ].join('');
-                    const cur = String(currentValue ?? '').trim().replace(/\s+/g, '').toUpperCase();
-                    sel.value = (cur === 'INF' || cur === 'INFINITY') ? 'INF' : 'Finite';
-                    sel.addEventListener('change', (e) => {
-                        e.stopPropagation();
-                        const ok = commitValue(String(sel.value ?? 'Finite'));
-                        if (!ok) sel.value = (cur === 'INF' || cur === 'INFINITY') ? 'INF' : 'Finite';
-                    });
+
+                    if (isObjectModeItem) {
+                        sel.innerHTML = [
+                            '<option value="Finite">Finite</option>',
+                            '<option value="INF">INF</option>'
+                        ].join('');
+                        const cur = String(currentValue ?? '').trim().replace(/\s+/g, '').toUpperCase();
+                        const normalized = (cur === 'INF' || cur === 'INFINITY') ? 'INF' : 'Finite';
+                        sel.value = normalized;
+                        sel.addEventListener('change', (e) => {
+                            e.stopPropagation();
+                            const desired = String(sel.value ?? 'Finite');
+                            const ok = commitValue(desired);
+                            if (!ok) sel.value = normalized;
+                        });
+                    } else if (isImageSemiDiaModeItem) {
+                        // ImagePlane.optimizeSemiDia
+                        sel.innerHTML = [
+                            '<option value="">(manual)</option>',
+                            '<option value="A">Auto (chief ray)</option>'
+                        ].join('');
+                        const cur = String(currentValue ?? '').trim().toUpperCase();
+                        const normalized = cur === 'A' ? 'A' : '';
+                        sel.value = normalized;
+                        sel.addEventListener('change', (e) => {
+                            e.stopPropagation();
+                            const desired = String(sel.value ?? '');
+                            const ok = commitValue(desired);
+                            if (!ok) {
+                                sel.value = normalized;
+                                return;
+                            }
+
+                            // If Auto was selected, run chief-ray semidia update immediately.
+                            if (desired === 'A' && typeof window.calculateImageSemiDiaFromChiefRays === 'function') {
+                                (async () => {
+                                    try {
+                                        await window.calculateImageSemiDiaFromChiefRays();
+                                    } catch (err) {
+                                        console.error('❌ calculateImageSemiDiaFromChiefRays failed:', err);
+                                    }
+                                    try { refreshBlockInspector(); } catch (_) {}
+                                })();
+                            }
+                        });
+                    } else {
+                        // Gap.thicknessMode (pre-image gap only)
+                        sel.innerHTML = [
+                            '<option value="">(manual)</option>',
+                            '<option value="IMD">Image Distance</option>',
+                            '<option value="BFL">Back Focal Length</option>'
+                        ].join('');
+
+                        const cur = String(currentValue ?? '').trim().replace(/\s+/g, '').toUpperCase();
+                        const normalized = (cur === 'IMD' || cur === 'BFL') ? cur : '';
+                        sel.value = normalized;
+
+                        sel.addEventListener('change', (e) => {
+                            e.stopPropagation();
+                            const desired = String(sel.value ?? '').toUpperCase();
+                            const ok = commitValue(desired);
+                            if (!ok) {
+                                sel.value = normalized;
+                                return;
+                            }
+
+                            if (desired !== 'IMD' && desired !== 'BFL') {
+                                try { refreshBlockInspector(); } catch (_) {}
+                                return;
+                            }
+
+                            // Compute and write thickness immediately.
+                            (async () => {
+                                try {
+                                    const systemConfig = (typeof loadSystemConfigurations === 'function') ? loadSystemConfigurations() : null;
+                                    const activeId = systemConfig?.activeConfigId;
+                                    const cfg = Array.isArray(systemConfig?.configurations)
+                                        ? systemConfig.configurations.find(c => c && c.id === activeId)
+                                        : null;
+                                    const blocks = Array.isArray(cfg?.blocks) ? cfg.blocks : null;
+                                    if (!blocks || typeof expandBlocksToOpticalSystemRows !== 'function') return;
+
+                                    const exp = expandBlocksToOpticalSystemRows(blocks);
+                                    const rows = exp && Array.isArray(exp.rows) ? exp.rows : null;
+                                    if (!rows || rows.length < 2) return;
+
+                                    const primaryWavelength = (typeof window.getPrimaryWavelength === 'function')
+                                        ? (Number(window.getPrimaryWavelength()) || 0.5876)
+                                        : 0.5876;
+
+                                    let val = __blocks_findRequirementTarget(desired, activeId);
+                                    if (!Number.isFinite(val)) {
+                                        val = (desired === 'BFL')
+                                            ? calculateBackFocalLength(rows, primaryWavelength)
+                                            : calculateImageDistance(rows, primaryWavelength);
+                                    }
+
+                                    if (!Number.isFinite(val)) {
+                                        alert(`${desired} の計算に失敗しました。`);
+                                        return;
+                                    }
+
+                                    const thScope = __blocks_getVarScope(vars?.thickness);
+                                    const res2 = (thScope === 'global')
+                                        ? __blocks_setBlockParamValueAllConfigs(blockId, 'thickness', val)
+                                        : __blocks_setBlockParamValue(blockId, 'thickness', val);
+                                    if (!res2 || res2.ok !== true) {
+                                        alert(`Failed to update ${blockId}.thickness: ${res2?.reason || 'unknown error'}`);
+                                        return;
+                                    }
+                                } catch (err) {
+                                    console.error('❌ Failed to compute/apply IMD/BFL thickness:', err);
+                                }
+                                try { refreshBlockInspector(); } catch (_) {}
+                            })();
+                        });
+                    }
+
                     valueEl = sel;
                 } else if (isSurfTypeItem) {
                     const sel = document.createElement('select');
@@ -6553,6 +6848,7 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                     valueInput.style.borderRadius = '4px';
                     valueInput.addEventListener('click', (e) => e.stopPropagation());
 
+                    // Object distance is ignored when objectDistanceMode is INF.
                     if (isObjectDistanceItem) {
                         try {
                             const mRaw = getDisplayValue('objectDistanceMode');
@@ -6563,18 +6859,21 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                         } catch (_) {}
                     }
 
-                    const commit = () => {
+                    const tryCommit = () => {
                         const ok = commitValue(String(valueInput.value ?? ''));
                         if (!ok) valueInput.value = currentValue;
                     };
-                    valueInput.addEventListener('blur', () => { commit(); });
                     valueInput.addEventListener('keydown', (e) => {
                         if (e.key === 'Enter') {
                             e.preventDefault();
-                            commit();
+                            e.stopPropagation();
+                            tryCommit();
                         }
-                        e.stopPropagation();
                     });
+                    valueInput.addEventListener('blur', () => {
+                        tryCommit();
+                    });
+
                     valueEl = valueInput;
                 }
 
@@ -7198,6 +7497,12 @@ function __blocks_mapSurfaceEditToBlockChange(edit) {
             // Try to apply to the block itself in case it has a thickness parameter
             console.warn('⚠️ ImagePlane thickness edit: no following AirGap found, attempting to apply to ImagePlane itself');
             return { blockId: String(blockId), blockType: 'ImagePlane', variable: 'thickness', oldValue, newValue };
+        }
+        if (field === 'semidia') {
+            return { blockId: String(blockId), blockType: 'ImagePlane', variable: 'semidia', oldValue, newValue };
+        }
+        if (field === 'optimizeSemiDia') {
+            return { blockId: String(blockId), blockType: 'ImagePlane', variable: 'optimizeSemiDia', oldValue, newValue };
         }
         return null;
     }

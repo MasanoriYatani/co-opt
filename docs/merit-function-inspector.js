@@ -443,6 +443,8 @@ export const OPERAND_DEFINITIONS = {
   }
 };
 
+const HIDDEN_OPERANDS_IN_UI = new Set(['REAY', 'RSCE', 'TRAC', 'DIST']);
+
 /**
  * Inspector Display Manager
  * Handles the rendering and updating of the operand inspector panel
@@ -710,7 +712,7 @@ export class InspectorManager {
    * @returns {Array} Array of operand type names
    */
   static getAvailableOperands() {
-    return Object.keys(OPERAND_DEFINITIONS);
+    return Object.keys(OPERAND_DEFINITIONS).filter((k) => !HIDDEN_OPERANDS_IN_UI.has(k));
   }
   
   /**

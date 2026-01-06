@@ -283,6 +283,8 @@ class MeritFunctionEditor {
     }
     
     initializeTable() {
+        const HIDDEN_OPERANDS_IN_UI = new Set(['REAY', 'RSCE', 'TRAC', 'DIST']);
+
         // Tabulatorカラム定義
         const columns = [
             { title: "Num", field: "id", width: 80, hozAlign: "center", headerSort: true },
@@ -292,7 +294,7 @@ class MeritFunctionEditor {
                 width: 180, 
                 editor: "list",
                 editorParams: {
-                    values: Object.keys(OPERAND_DEFINITIONS).reduce((acc, key) => {
+                    values: Object.keys(OPERAND_DEFINITIONS).filter((key) => !HIDDEN_OPERANDS_IN_UI.has(key)).reduce((acc, key) => {
                         acc[key] = OPERAND_DEFINITIONS[key].name;
                         return acc;
                     }, {})
@@ -779,14 +781,13 @@ class MeritFunctionEditor {
                 return this.calculateSeidelTotal(operand, opticalSystemData, 'LCA');
             case 'TOT_TCA':
                 return this.calculateSeidelTotal(operand, opticalSystemData, 'TCA');
+            // Deprecated / non-functional operands: keep deterministic to avoid broken merit evaluation.
+            // They are also hidden from the UI operand dropdown.
             case 'REAY':
-                return 0.001 + Math.random() * 0.002;
             case 'RSCE':
-                return 0.01 + Math.random() * 0.005;
             case 'TRAC':
-                return 0.05 + Math.random() * 0.01;
             case 'DIST':
-                return 1.5 + Math.random() * 0.5;
+                return 0;
             case 'CLRH':
                 return this.calculateClearanceVsSemidia(operand, opticalSystemData);
             case 'SPOT_SIZE_ANNULAR':
@@ -2766,14 +2767,17 @@ class MeritFunctionEditor {
 
             const targetIdStr = (targetConfigId !== undefined && targetConfigId !== null) ? String(targetConfigId) : '';
 
-            // Only "Current" uses the *live* Optical System table.
-            // Explicit config requirements should NOT depend on transient UI edits.
-            if (wantsCurrent && activeConfigId && targetIdStr && targetIdStr === activeConfigId) {
-                return getOpticalSystemRows();
-            }
-            
             // 対応するConfigurationを検索
             const config = systemConfig?.configurations?.find(c => String(c.id) === String(targetIdStr));
+
+            // "Current" should reflect the *canonical* current design.
+            // If the active config is blocks-based, evaluate from expanded blocks so that
+            // requirements like IMD/BFL stay consistent with Design Intent edits (blocks-only mode).
+            // Only when there are no blocks do we fall back to the live Optical System table.
+            if (wantsCurrent && activeConfigId && targetIdStr && targetIdStr === activeConfigId) {
+                const hasBlocksForActive = Array.isArray(config?.blocks);
+                if (!hasBlocksForActive) return getOpticalSystemRows();
+            }
             
             if (!config) {
                 console.warn(`Config ID ${targetIdStr} が見つかりません。現在のテーブルデータを使用します。`);

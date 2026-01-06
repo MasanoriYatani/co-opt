@@ -641,6 +641,16 @@ export function validateBlocksConfiguration(config) {
         issues.push({ severity: 'fatal', phase: 'validate', message: 'Gap.thickness is required.', blockId: block.blockId });
       }
 
+      // Optional: thicknessMode (manual/IMD/BFL) for pre-image gap convenience.
+      // When enabled by UI, it writes the computed numeric thickness back into parameters.thickness.
+      try {
+        const tmRaw = getParamOrVarValue(parameters, variables, 'thicknessMode');
+        const tm = String(tmRaw ?? '').trim().replace(/\s+/g, '').toUpperCase();
+        if (tm !== '' && tm !== 'IMD' && tm !== 'BFL') {
+          issues.push({ severity: 'warning', phase: 'validate', message: `Gap.thicknessMode supports only 'IMD' or 'BFL' (got: ${String(tmRaw)}); ignoring.`, blockId: block.blockId });
+        }
+      } catch (_) {}
+
       // Optional: Gap.material (AIR or a glass name). Default is AIR (n≈1).
       const materialRaw = getParamOrVarValue(parameters, variables, 'material');
       const material = String(materialRaw ?? '').trim();
@@ -680,7 +690,25 @@ export function validateBlocksConfiguration(config) {
     }
 
     if (blockType === 'ImagePlane') {
-      // No parameters/variables required; marker block.
+      // Optional parameters supported:
+      // - semidia: numeric (image semi diameter)
+      // - optimizeSemiDia: 'A' to auto-update semidia by chief ray tracing (UI-triggered)
+      const semidiaRaw = parameters?.semidia;
+      if (semidiaRaw !== undefined && semidiaRaw !== null && String(semidiaRaw).trim() !== '') {
+        const n = (typeof semidiaRaw === 'number') ? semidiaRaw : (isNumericString(String(semidiaRaw)) ? Number(semidiaRaw) : NaN);
+        if (!Number.isFinite(n) || n <= 0) {
+          issues.push({ severity: 'fatal', phase: 'validate', message: `ImagePlane.parameters.semidia must be a positive number when provided (got: ${String(semidiaRaw)})`, blockId: block.blockId });
+        }
+      }
+
+      const optRaw = parameters?.optimizeSemiDia;
+      if (optRaw !== undefined && optRaw !== null && String(optRaw).trim() !== '') {
+        const s = String(optRaw).trim();
+        if (s !== 'A' && s !== 'a') {
+          issues.push({ severity: 'warning', phase: 'validate', message: `ImagePlane.parameters.optimizeSemiDia supports only 'A' (got: ${s}); ignoring.`, blockId: block.blockId });
+        }
+      }
+
       if (isPlainObject(variables) && Object.keys(variables).length > 0) {
         issues.push({
           severity: 'warning',
@@ -742,7 +770,8 @@ function createDefaultObjectRow() {
   };
 }
 
-function createDefaultImageRow(id) {
+function createDefaultImageRow(id, overrides = null) {
+  const ov = (overrides && typeof overrides === 'object') ? overrides : null;
   return {
     id,
     'object type': 'Image',
@@ -752,8 +781,8 @@ function createDefaultImageRow(id) {
     optimizeR: '',
     thickness: '',
     optimizeT: '',
-    semidia: '',
-    optimizeSemiDia: '',
+    semidia: ov && Object.prototype.hasOwnProperty.call(ov, 'semidia') ? ov.semidia : '',
+    optimizeSemiDia: ov && Object.prototype.hasOwnProperty.call(ov, 'optimizeSemiDia') ? ov.optimizeSemiDia : '',
     material: '',
     optimizeMaterial: '',
     rindex: '',
@@ -868,6 +897,7 @@ export function expandBlocksToOpticalSystemRows(blocks) {
 
   let sawImagePlane = false;
   let imagePlaneBlockId = null;
+  let imagePlaneOverrides = null;
 
   for (const block of blocks) {
     const blockId = isPlainObject(block) ? block.blockId : undefined;
@@ -913,6 +943,25 @@ export function expandBlocksToOpticalSystemRows(blocks) {
     if (type === 'ImagePlane') {
       sawImagePlane = true;
       imagePlaneBlockId = blockId || null;
+
+      // Optional ImagePlane row overrides (applied to the appended Image row).
+      try {
+        const p = isPlainObject(params) ? params : {};
+        const ov = {};
+
+        if (Object.prototype.hasOwnProperty.call(p, 'semidia')) {
+          const s = String(p.semidia ?? '').trim();
+          if (s !== '') ov.semidia = p.semidia;
+        }
+        if (Object.prototype.hasOwnProperty.call(p, 'optimizeSemiDia')) {
+          const s = String(p.optimizeSemiDia ?? '').trim();
+          if (s !== '') ov.optimizeSemiDia = p.optimizeSemiDia;
+        }
+
+        imagePlaneOverrides = Object.keys(ov).length > 0 ? ov : null;
+      } catch (_) {
+        imagePlaneOverrides = null;
+      }
       continue;
     }
 
@@ -1242,8 +1291,8 @@ export function expandBlocksToOpticalSystemRows(blocks) {
     });
   }
 
-  // Append Image row (do not set AUTO/A/INF here; keep default empty like the legacy table).
-  const imageRow = createDefaultImageRow(rows.length);
+  // Append Image row (do not force AUTO/A/INF here; honor ImagePlane overrides if provided).
+  const imageRow = createDefaultImageRow(rows.length, imagePlaneOverrides);
   if (imagePlaneBlockId) {
     imageRow._blockType = 'ImagePlane';
     imageRow._blockId = imagePlaneBlockId;
