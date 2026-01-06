@@ -15,7 +15,7 @@ import { tableObject } from '../table-object.js';
 import { tableOpticalSystem } from '../table-optical-system.js';
 import { debugWASMSystem, quickWASMComparison } from '../debug/debug-utils.js';
 import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows, deriveBlocksFromLegacyOpticalSystemRows } from '../block-schema.js';
-import { calculateBackFocalLength, calculateImageDistance } from '../ray-paraxial.js';
+import { calculateBackFocalLength, calculateImageDistance, calculateFocalLength, findStopSurfaceIndex } from '../ray-paraxial.js';
 import { getGlassDataWithSellmeier, findSimilarGlassesByNdVd, findSimilarGlassNames } from '../glass.js';
 import { normalizeDesign } from '../normalize-design.js';
 
@@ -4088,11 +4088,34 @@ async function showPSFDiagram(plotType, samplingSize, logScale, objectIndex, opt
         const psfCalculator = await getPSFCalculatorSingleton();
         
         // PSFを計算
-        if (PSF_DEBUG) console.log(`🔬 [PSF] PSF計算中... (${psfSamplingSize}x${psfSamplingSize})`);
+        // Use Stop.semidia (Blocks-backed) + paraxial EFL for physical scaling.
+        let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
+        let focalLengthMm = 100.0;
+        try {
+            const stopIndex = findStopSurfaceIndex(opticalSystemRows);
+            const stopRow = (stopIndex >= 0) ? opticalSystemRows?.[stopIndex] : null;
+            const sd = Math.abs(parseFloat(stopRow?.semidia ?? stopRow?.Semidia ?? stopRow?.['Semi Diameter'] ?? stopRow?.aperture ?? stopRow?.Aperture ?? NaN));
+            if (Number.isFinite(sd) && sd > 0) {
+                const isApertureField = stopRow && (stopRow.aperture !== undefined || stopRow.Aperture !== undefined);
+                const stopRadiusMm = isApertureField ? (sd * 0.5) : sd;
+                if (Number.isFinite(stopRadiusMm) && stopRadiusMm > 0) {
+                    pupilDiameterMm = stopRadiusMm * 2;
+                }
+            }
+
+            const fl = calculateFocalLength(opticalSystemRows, wavelength);
+            if (Number.isFinite(fl) && Math.abs(fl) > 1e-9 && fl !== Infinity) {
+                focalLengthMm = Math.abs(fl);
+            }
+        } catch (e) {
+            console.warn('⚠️ [PSF] Failed to derive pupilDiameter/focalLength; using defaults:', e);
+        }
+
+        if (PSF_DEBUG) console.log(`🔬 [PSF] PSF計算中... (${psfSamplingSize}x${psfSamplingSize}) D=${pupilDiameterMm}mm f=${focalLengthMm}mm`);
         const psfResult = await raceWithCancel(psfCalculator.calculatePSF(opdData, {
             samplingSize: psfSamplingSize,
-            pupilDiameter: 10.0, // mm（適切な値に調整）
-            focalLength: 100.0,  // mm（適切な値に調整）
+            pupilDiameter: pupilDiameterMm,
+            focalLength: focalLengthMm,
             forceImplementation: performanceMode === 'auto' ? null : performanceMode,
             removeTilt: true,
             onProgress: (evt) => {
@@ -4328,8 +4351,329 @@ async function showPSFDiagram(plotType, samplingSize, logScale, objectIndex, opt
     }
 }
 
+/**
+ * MTF図表示（PSF -> OTF -> MTF）
+ * - 波長選択: wavelengthMicrons
+ * - フィールド選択: objectIndex
+ * - 表示最大周波数: maxFrequencyLpmm
+ */
+async function showMTFDiagram({ wavelengthMicrons, objectIndex, maxFrequencyLpmm, samplingSize, samplingPoints, containerElement, onProgress } = {}) {
+    const safeNumber = (v, fallback) => {
+        const n = Number(v);
+        return Number.isFinite(n) ? n : fallback;
+    };
+
+    const reportProgress = (percent, message) => {
+        try {
+            if (typeof onProgress !== 'function') return;
+            const evt = { percent, message };
+            onProgress(evt);
+        } catch (_) {}
+    };
+
+    const wl = safeNumber(wavelengthMicrons, 0.5876);
+    const objIndex = Number.isFinite(Number(objectIndex)) ? Math.max(0, Math.floor(Number(objectIndex))) : 0;
+    const maxLpmm = Math.max(0, safeNumber(maxFrequencyLpmm, 100));
+
+    const isPowerOfTwo = (n) => Number.isInteger(n) && n > 0 && (n & (n - 1)) === 0;
+    const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+    // samplingSize is the FFT grid size (NxN). Legacy samplingPoints is treated as alias when it looks like a valid grid size.
+    const samplingCandidate = Math.floor(safeNumber(samplingSize, NaN));
+    const legacyCandidate = Math.floor(safeNumber(samplingPoints, NaN));
+    const gridCandidate = Number.isFinite(samplingCandidate) ? samplingCandidate : legacyCandidate;
+    const gridSize = isPowerOfTwo(gridCandidate) ? clamp(gridCandidate, 32, 4096) : 256;
+
+    const containerEl = containerElement || document.getElementById('mtf-container');
+    if (!containerEl) {
+        throw new Error('MTF container element not found');
+    }
+    try { containerEl.innerHTML = ''; } catch (_) {}
+
+    reportProgress(0, 'Starting...');
+
+    // Prefer Plotly from the container's window (popup), fallback to opener.
+    const plotly = containerEl?.ownerDocument?.defaultView?.Plotly || (typeof window !== 'undefined' ? window.Plotly : null);
+    if (!plotly) {
+        throw new Error('Plotly is not available');
+    }
+
+    reportProgress(5, 'Loading modules...');
+
+    // Dynamic imports (reuse the same infra as PSF)
+    const { createOPDCalculator } = await import('../eva-wavefront.js?v=2026-01-07a');
+    const { WavefrontAberrationAnalyzer } = await import('../eva-wavefront.js?v=2026-01-07a');
+    const { SimpleFFT } = await import('../eva-psf.js?v=2026-01-07a');
+
+    reportProgress(10, 'Preparing optical system...');
+
+    // Optical system and objects (live table preferred)
+    const opticalSystemRows = getOpticalSystemRows(window.tableOpticalSystem);
+    if (!opticalSystemRows || opticalSystemRows.length === 0) {
+        throw new Error('光学システムデータがありません。まず光学システムを設定してください。');
+    }
+    const objects = getObjectRows(window.tableObject);
+    if (!objects || objects.length === 0) {
+        throw new Error('オブジェクトデータがありません。まずオブジェクトを設定してください。');
+    }
+    if (objIndex >= objects.length) {
+        throw new Error('指定されたオブジェクトが見つかりません。');
+    }
+
+    const selectedObject = objects[objIndex];
+    const objectX = (selectedObject.x ?? selectedObject.xHeightAngle ?? 0);
+    const objectY = (selectedObject.y ?? selectedObject.yHeightAngle ?? 0);
+    const objectTypeRaw = String(selectedObject.position ?? selectedObject.object ?? selectedObject.Object ?? selectedObject.objectType ?? 'Point');
+    const objectTypeLower = objectTypeRaw.toLowerCase();
+
+    let fieldAngle = { x: 0, y: 0 };
+    let xHeight = 0;
+    let yHeight = 0;
+    if (/\bangle\b/.test(objectTypeLower)) {
+        fieldAngle = { x: safeNumber(objectX, 0), y: safeNumber(objectY, 0) };
+    } else {
+        xHeight = safeNumber(objectX, 0);
+        yHeight = safeNumber(objectY, 0);
+    }
+
+    const fieldSetting = {
+        objectIndex: objIndex,
+        type: objectTypeRaw,
+        fieldAngle,
+        xHeight,
+        yHeight,
+        wavelength: wl
+    };
+
+    // Compute OPD grid via Zernike surface (same approach as PSF)
+    const samplingSizeForPSF = gridSize;
+    const zernikeFitSamplingSize = 128;
+
+    const opdCalculator = createOPDCalculator(opticalSystemRows, wl);
+    const analyzer = new WavefrontAberrationAnalyzer(opdCalculator);
+
+    reportProgress(15, 'Generating wavefront...');
+    const onWavefrontProgress = (evt) => {
+        try {
+            const p = Number(evt?.percent);
+            const msg = evt?.message || evt?.phase || 'Generating wavefront...';
+            if (Number.isFinite(p)) {
+                // Map 0..100 -> 15..55
+                reportProgress(15 + (p * 0.40), msg);
+            } else {
+                reportProgress(undefined, msg);
+            }
+        } catch (_) {}
+    };
+    const wavefrontMap = await analyzer.generateWavefrontMap(fieldSetting, zernikeFitSamplingSize, 'circular', {
+        recordRays: false,
+        progressEvery: 512,
+        zernikeMaxNoll: 37,
+        renderFromZernike: true,
+        onProgress: onWavefrontProgress
+    });
+    if (wavefrontMap?.error) {
+        throw new Error(wavefrontMap.error?.message || 'Wavefront generation failed');
+    }
+
+    reportProgress(60, 'Rendering Zernike grid...');
+
+    const zGrid = analyzer.generateZernikeRenderGrid(wavefrontMap, samplingSizeForPSF, 'opd', { rhoMax: 1.0 });
+    if (!zGrid || !Array.isArray(zGrid.z) || !Array.isArray(zGrid.z[0])) {
+        throw new Error('Zernike render grid generation failed');
+    }
+
+    const s = Math.max(16, Math.floor(Number(samplingSizeForPSF)));
+    const opdGrid = Array.from({ length: s }, () => new Float32Array(s));
+    const ampGrid = Array.from({ length: s }, () => new Float32Array(s));
+    const maskGrid = Array.from({ length: s }, () => Array(s).fill(false));
+    const xCoords = new Float32Array(s);
+    const yCoords = new Float32Array(s);
+    for (let i = 0; i < s; i++) {
+        xCoords[i] = Number(zGrid.x?.[i] ?? ((i / (s - 1 || 1)) * 2 - 1));
+        yCoords[i] = Number(zGrid.y?.[i] ?? ((i / (s - 1 || 1)) * 2 - 1));
+    }
+    for (let iy = 0; iy < s; iy++) {
+        const row = zGrid.z[iy];
+        for (let ix = 0; ix < s; ix++) {
+            const vWaves = row?.[ix];
+            if (vWaves === null || !isFinite(vWaves)) {
+                maskGrid[iy][ix] = false;
+                opdGrid[iy][ix] = 0;
+                ampGrid[iy][ix] = 0;
+                continue;
+            }
+            maskGrid[iy][ix] = true;
+            opdGrid[iy][ix] = Number(vWaves) * Number(wl);
+            ampGrid[iy][ix] = 1.0;
+        }
+    }
+
+    const opdData = {
+        gridSize: s,
+        wavelength: wl,
+        gridData: {
+            opd: opdGrid,
+            amplitude: ampGrid,
+            pupilMask: maskGrid,
+            xCoords,
+            yCoords
+        }
+    };
+
+    const psfCalculator = await getPSFCalculatorSingleton();
+
+    // IMPORTANT: PSFCalculator's internal pixelSize heuristic depends on samplingSize.
+    // For MTF vs spatial frequency (lp/mm), we want a samplingSize-independent physical scale.
+    // For Fraunhofer diffraction with pupil diameter D sampled on an N grid,
+    // image-plane sample pitch is approximately: pixelSize = \lambda * f / D.
+    // Units here: wavelength in microns, focalLength/pupilDiameter in mm/mm => pixelSize in microns.
+    // Derive:
+    // - pupilDiameterMm from Stop.semidia (Blocks-backed)
+    // - focalLengthMm from paraxial EFL
+    let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
+    let focalLengthMm = 100.0;
+    try {
+        const stopIndex = findStopSurfaceIndex(opticalSystemRows);
+        const stopRow = (stopIndex >= 0) ? opticalSystemRows?.[stopIndex] : null;
+        const sd = Math.abs(parseFloat(stopRow?.semidia ?? stopRow?.Semidia ?? stopRow?.['Semi Diameter'] ?? stopRow?.aperture ?? stopRow?.Aperture ?? NaN));
+        if (Number.isFinite(sd) && sd > 0) {
+            // If this came from aperture (diameter), convert to radius.
+            // Heuristic: aperture fields are typically diameter; semidia is radius.
+            const isApertureField = stopRow && (stopRow.aperture !== undefined || stopRow.Aperture !== undefined);
+            const stopRadiusMm = isApertureField ? (sd * 0.5) : sd;
+            if (Number.isFinite(stopRadiusMm) && stopRadiusMm > 0) {
+                pupilDiameterMm = stopRadiusMm * 2;
+            }
+        }
+
+        const fl = calculateFocalLength(opticalSystemRows, wl);
+        if (Number.isFinite(fl) && Math.abs(fl) > 1e-9 && fl !== Infinity) {
+            focalLengthMm = Math.abs(fl);
+        }
+    } catch (e) {
+        console.warn('⚠️ [MTF] Failed to derive pupilDiameter/focalLength; using defaults:', e);
+    }
+
+    const pixelSizeMicronsForMTF = (pupilDiameterMm > 0)
+        ? (wl * focalLengthMm / pupilDiameterMm)
+        : 1.0;
+
+    reportProgress(70, 'Calculating PSF...');
+    const psfResult = await psfCalculator.calculatePSF(opdData, {
+        samplingSize: s,
+        pupilDiameter: pupilDiameterMm, // mm (Stop.semidia*2)
+        focalLength: focalLengthMm,     // mm (paraxial EFL)
+        pixelSize: pixelSizeMicronsForMTF,
+        forceImplementation: null,
+        removeTilt: true
+    });
+
+    reportProgress(85, 'Computing OTF/MTF...');
+
+    const psf2D = psfResult?.psfData || psfResult?.psf || psfResult?.intensity || null;
+    const pixelSizeMicrons = safeNumber(pixelSizeMicronsForMTF, safeNumber(psfResult?.options?.pixelSize, 1.0));
+    if (!psf2D || !Array.isArray(psf2D) || !Array.isArray(psf2D[0])) {
+        throw new Error('PSF data missing for MTF');
+    }
+    const N = psf2D.length;
+    if (N < 2 || psf2D[0].length !== N) {
+        throw new Error('PSF grid must be NxN');
+    }
+
+    // --- OTF/MTF ---
+    // OTF = FFT(PSF), normalize by DC, MTF = |OTF|
+    const real = Array.from({ length: N }, (_, y) => Array.from({ length: N }, (_, x) => safeNumber(psf2D[y][x], 0)));
+    const imag = Array.from({ length: N }, () => Array.from({ length: N }, () => 0));
+    const otf = SimpleFFT.fft2D(real, imag);
+    const dcRe = safeNumber(otf?.real?.[0]?.[0], 0);
+    const dcIm = safeNumber(otf?.imag?.[0]?.[0], 0);
+    const dcMag = Math.hypot(dcRe, dcIm);
+    if (!Number.isFinite(dcMag) || dcMag <= 0) {
+        throw new Error('Invalid OTF DC component');
+    }
+
+    const dfCyclesPerMicron = 1.0 / (N * pixelSizeMicrons);
+    const dfLpmm = dfCyclesPerMicron * 1000.0;
+    const nyquistLpmm = 0.5 / pixelSizeMicrons * 1000.0;
+    const maxPlotLpmm = (maxLpmm > 0) ? Math.min(maxLpmm, nyquistLpmm) : nyquistLpmm;
+
+    // NOTE: Without fractional interpolation, sampling along arbitrary directions produces stair-steps.
+    // We therefore sample strictly on FFT integer bins along one axis (kx or ky), which is consistent
+    // with the discrete FFT grid and becomes smoother by increasing samplingSizeForPSF.
+    const maxBin = Math.floor(N / 2);
+    const kMax = Math.max(0, Math.min(maxBin, Math.floor(maxPlotLpmm / (dfLpmm || 1e-9))));
+
+    const sample1DAxis = (axis) => {
+        const freq = [];
+        const mtfVals = [];
+        for (let k = 0; k <= kMax; k++) {
+            const f = k * dfLpmm;
+            let re = 0;
+            let im = 0;
+            if (axis === 'x') {
+                re = safeNumber(otf.real?.[0]?.[k], 0);
+                im = safeNumber(otf.imag?.[0]?.[k], 0);
+            } else {
+                re = safeNumber(otf.real?.[k]?.[0], 0);
+                im = safeNumber(otf.imag?.[k]?.[0], 0);
+            }
+            const mtf = Math.hypot(re, im) / dcMag;
+            freq.push(f);
+            mtfVals.push(Number.isFinite(mtf) ? mtf : null);
+        }
+        if (mtfVals.length > 0) mtfVals[0] = 1.0;
+        return { freq, mtfVals };
+    };
+
+    // Tangential/Sagittal: without directional interpolation, choose the nearest principal axis
+    // based on field direction (x-dominant => tangential=x, otherwise tangential=y).
+    const fieldVecRaw = (/\bangle\b/.test(objectTypeLower))
+        ? { x: safeNumber(fieldAngle?.x, 0), y: safeNumber(fieldAngle?.y, 0) }
+        : { x: safeNumber(xHeight, 0), y: safeNumber(yHeight, 0) };
+
+    let tdx = fieldVecRaw.x;
+    let tdy = fieldVecRaw.y;
+    if (!(Math.abs(tdx) > 0 || Math.abs(tdy) > 0)) {
+        tdx = 1;
+        tdy = 0;
+    }
+    const tanAxis = (Math.abs(tdx) >= Math.abs(tdy)) ? 'x' : 'y';
+    const sagAxis = (tanAxis === 'x') ? 'y' : 'x';
+
+    const tan = sample1DAxis(tanAxis);
+    const sag = sample1DAxis(sagAxis);
+
+    const titleNm = (wl * 1000).toFixed(1);
+    const traceTan = {
+        x: tan.freq,
+        y: tan.mtfVals,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Tangential'
+    };
+    const traceSag = {
+        x: sag.freq,
+        y: sag.mtfVals,
+        type: 'scatter',
+        mode: 'lines',
+        name: 'Sagittal'
+    };
+
+    const layout = {
+        title: `Modulation Transfer Function (${titleNm} nm, Object ${objIndex})`,
+        xaxis: { title: 'Spatial frequency (lp/mm)', range: [0, maxPlotLpmm] },
+        yaxis: { title: 'MTF', range: [0, 1.05] },
+        margin: { l: 60, r: 20, t: 50, b: 50 }
+    };
+
+    reportProgress(95, 'Rendering plot...');
+    await plotly.newPlot(containerEl, [traceTan, traceSag], layout, { responsive: true, displaylogo: false });
+    reportProgress(100, 'Done');
+}
+
 if (typeof window !== 'undefined') {
     window.showPSFDiagram = showPSFDiagram;
+    window.showMTFDiagram = showMTFDiagram;
 }
 
 /**

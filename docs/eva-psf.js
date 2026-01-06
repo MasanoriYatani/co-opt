@@ -39,7 +39,7 @@ async function loadWasmCalculatorDirect() {
 /**
  * 簡易FFT実装（Cooley-Tukey アルゴリズム）
  */
-class SimpleFFT {
+export class SimpleFFT {
     static async _yieldToUI() {
         try {
             if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {

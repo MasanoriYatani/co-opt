@@ -3389,6 +3389,279 @@ export function setupOpticalSystemChangeListeners(scene) {
                 });
         }
 
+        // Modulation Transfer Function (MTF) popup window button
+        const openMtfWindowBtn = document.getElementById('open-mtf-window-btn');
+        if (openMtfWindowBtn) {
+                openMtfWindowBtn.addEventListener('click', () => {
+                        if (window.__mtfPopup && !window.__mtfPopup.closed) {
+                                try { window.__mtfPopup.focus(); } catch (_) {}
+                                return;
+                        }
+
+                        const popup = window.open('', 'Modulation Transfer Function', 'width=800,height=600');
+                        window.__mtfPopup = popup;
+
+                        popup.document.write(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>Modulation Transfer Function</title>
+    <style>
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: #f4f4f4;
+        }
+        .header {
+            padding: 10px 12px;
+            background: #f8f8f8;
+            color: #333;
+            border-bottom: 1px solid #ddd;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .controls {
+            padding: 10px 12px;
+            background: #f8f8f8;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px 10px;
+            align-items: center;
+            flex: 0 0 auto;
+        }
+        .controls label { font-size: 12px; color: #333; white-space: nowrap; }
+        .controls select {
+            padding: 5px 8px;
+            font-size: 12px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: white;
+        }
+        .controls input {
+            padding: 5px 8px;
+            font-size: 12px;
+            border: 1px solid #bbb;
+            border-radius: 4px;
+            background: white;
+            width: 120px;
+        }
+        .controls button {
+            padding: 6px 10px;
+            border: 1px solid #bbb;
+            background: #f8f8f8;
+            cursor: pointer;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #333;
+        }
+        .controls button:hover { background: #e9e9e9; }
+        .note { padding: 8px 12px; font-size: 12px; color: #666; border-bottom: 1px solid #eee; background: #fff; }
+        .content {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: hidden;
+            background: white;
+            display: flex;
+            flex-direction: column;
+        }
+        #popup-mtf-container { flex: 1 1 auto; min-height: 0; }
+    </style>
+    <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+</head>
+<body>
+    <div class="header">Modulation Transfer Function</div>
+    <div class="controls">
+        <label for="popup-mtf-wavelength-select">Wavelength:</label>
+        <select id="popup-mtf-wavelength-select"></select>
+        <label for="popup-mtf-object-select">Object:</label>
+        <select id="popup-mtf-object-select"></select>
+        <label for="popup-mtf-max-freq-input">Max (lp/mm):</label>
+        <input id="popup-mtf-max-freq-input" type="number" min="0" step="1" value="100" />
+        <label for="popup-mtf-sampling-select">Sampling:</label>
+        <select id="popup-mtf-sampling-select">
+            <option value="32">32x32</option>
+            <option value="64">64x64</option>
+            <option value="128">128x128</option>
+            <option value="256" selected>256x256</option>
+            <option value="512">512x512</option>
+            <option value="1024">1024x1024</option>
+            <option value="2048">2048x2048</option>
+            <option value="4096">4096x4096</option>
+        </select>
+        <button id="popup-show-mtf-btn" type="button">Show MTF</button>
+    </div>
+    <div class="note">
+        Note: MTF is computed from PSF via Fourier transform.
+    </div>
+    <div id="popup-mtf-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-mtf-progress-text" style="margin-bottom: 6px;">Calculating MTF...</div>
+        <progress id="popup-mtf-progress" style="width: 100%;" max="100"></progress>
+    </div>
+    <div class="content">
+        <div id="popup-mtf-container"></div>
+    </div>
+
+    <script>
+        function safeCall(fn, fallback) {
+            try { return fn(); } catch (_) { return fallback; }
+        }
+
+        function getOpener() {
+            try { return window.opener || null; } catch (_) { return null; }
+        }
+
+        function buildWavelengthOptions() {
+            const opener = getOpener();
+            if (!opener) return [];
+            const getSourceRows = opener.getSourceRows;
+            const sources = (typeof getSourceRows === 'function')
+                ? safeCall(() => getSourceRows(opener.tableSource), [])
+                : [];
+            const primary = (typeof opener.getPrimaryWavelength === 'function')
+                ? (Number(safeCall(() => opener.getPrimaryWavelength(), 0)) || null)
+                : null;
+            const out = [];
+            if (Array.isArray(sources) && sources.length > 0) {
+                for (let i = 0; i < sources.length; i++) {
+                    const wl = Number(sources[i]?.wavelength);
+                    if (!Number.isFinite(wl) || wl <= 0) continue;
+                    const nm = wl * 1000;
+                    const label = Number.isFinite(primary) && Math.abs(wl - primary) < 1e-9
+                        ? (nm.toFixed(1) + ' nm (primary)')
+                        : (nm.toFixed(1) + ' nm');
+                    out.push({ value: String(wl), label });
+                }
+            }
+            if (out.length === 0) {
+                out.push({ value: String(primary || 0.5876), label: (((primary || 0.5876) * 1000).toFixed(1) + ' nm') });
+            }
+            return out;
+        }
+
+        function buildObjectOptions() {
+            const opener = getOpener();
+            if (!opener) return [];
+            const getObjectRows = opener.getObjectRows;
+            const objects = (typeof getObjectRows === 'function')
+                ? safeCall(() => getObjectRows(opener.tableObject), [])
+                : [];
+            const out = [];
+            if (Array.isArray(objects) && objects.length > 0) {
+                for (let i = 0; i < objects.length; i++) {
+                    const obj = objects[i];
+                    if (!obj) continue;
+                    const typeRaw = String(obj.position ?? obj.object ?? obj.Object ?? obj.objectType ?? 'Point');
+                    const x = (obj.x ?? obj.xHeightAngle ?? 0);
+                    const y = (obj.y ?? obj.yHeightAngle ?? 0);
+                    out.push({ value: String(i), label: (String(i) + ': ' + typeRaw + ' (' + x + ', ' + y + ')') });
+                }
+            }
+            if (out.length === 0) out.push({ value: '0', label: '0' });
+            return out;
+        }
+
+        function populateSelect(selectEl, options) {
+            if (!selectEl) return;
+            const current = selectEl.value;
+            selectEl.innerHTML = '';
+            for (const opt of options) {
+                const o = document.createElement('option');
+                o.value = opt.value;
+                o.textContent = opt.label;
+                selectEl.appendChild(o);
+            }
+            if (current && Array.from(selectEl.options).some(o => o.value === current)) {
+                selectEl.value = current;
+            }
+        }
+
+        function syncAllOptions() {
+            populateSelect(document.getElementById('popup-mtf-wavelength-select'), buildWavelengthOptions());
+            populateSelect(document.getElementById('popup-mtf-object-select'), buildObjectOptions());
+        }
+
+        window.renderMTF = async () => {
+            const containerEl = document.getElementById('popup-mtf-container');
+            if (containerEl) containerEl.innerHTML = '';
+
+            const progressWrapper = document.getElementById('popup-mtf-progress-wrapper');
+            const progressEl = document.getElementById('popup-mtf-progress');
+            const progressTextEl = document.getElementById('popup-mtf-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressEl && Number.isFinite(value)) progressEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
+            const hideProgress = () => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'none';
+                } catch (_) {}
+            };
+
+            const wlSel = document.getElementById('popup-mtf-wavelength-select');
+            const objSel = document.getElementById('popup-mtf-object-select');
+            const maxEl = document.getElementById('popup-mtf-max-freq-input');
+            const samplingEl = document.getElementById('popup-mtf-sampling-select');
+
+            const wavelength = wlSel ? Number(wlSel.value) : 0.5876;
+            const objectIndex = objSel ? parseInt(objSel.value, 10) : 0;
+            const maxFreq = maxEl ? Number(maxEl.value) : 100;
+            const sampling = samplingEl ? Number(samplingEl.value) : 256;
+
+            try {
+                const opener = getOpener();
+                if (!opener || typeof opener.showMTFDiagram !== 'function') {
+                    throw new Error('showMTFDiagram is not available on opener');
+                }
+                setProgress(0, 'Starting...');
+                await opener.showMTFDiagram({
+                    wavelengthMicrons: Number.isFinite(wavelength) ? wavelength : 0.5876,
+                    objectIndex: Number.isFinite(objectIndex) ? objectIndex : 0,
+                    maxFrequencyLpmm: Number.isFinite(maxFreq) ? maxFreq : 100,
+                    samplingSize: Number.isFinite(sampling) ? sampling : 256,
+                    onProgress: (evt) => {
+                        try {
+                            const p = Number(evt?.percent);
+                            const msg = evt?.message || evt?.phase || 'Working...';
+                            if (Number.isFinite(p)) setProgress(p, msg);
+                            else setProgress(undefined, msg);
+                        } catch (_) {}
+                    },
+                    containerElement: containerEl
+                });
+                setProgress(100, 'Done');
+                hideProgress();
+            } catch (err) {
+                console.error(err);
+                setProgress(100, 'Failed');
+                if (containerEl) {
+                    containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate MTF. Check console.</div>';
+                }
+            }
+        };
+
+        document.getElementById('popup-show-mtf-btn').addEventListener('click', () => window.renderMTF());
+        window.addEventListener('focus', syncAllOptions);
+        window.addEventListener('load', () => syncAllOptions());
+    </script>
+</body>
+</html>
+                        `);
+
+                        try { popup.document.close(); } catch (_) {}
+                });
+        }
+
         // Transverse Aberration popup window button
         const openTransverseAberrationWindowBtn = document.getElementById('open-transverse-aberration-window-btn');
         if (openTransverseAberrationWindowBtn) {

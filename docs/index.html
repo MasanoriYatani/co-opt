@@ -61,6 +61,7 @@
       <button id="open-transverse-aberration-window-btn" title="Open Transverse Aberration in popup window">Transverse Aberration</button>
       <button id="open-opd-window-btn" title="Open Optical Path Difference in popup window">Optical Path Difference</button>
       <button id="open-psf-window-btn" title="Open Point Spread Function in popup window">Point Spread Function</button>
+      <button id="open-mtf-window-btn" title="Open Modulation Transfer Function in popup window">Modulation Transfer Function</button>
     </div>
 
     <!-- Suggest / Optimize (Design Intent workflow) -->
@@ -498,7 +499,7 @@
       console.warn('⚠️ [Startup] Failed to pre-load active configuration:', e);
     }
   </script>
-  <script type="module" src="main.js?v=2026-01-02q"></script>
+  <script type="module" src="main.js?v=2026-01-07a"></script>
   
   <!-- Configuration System -->
   <script type="module" src="table-configuration.js"></script>
@@ -563,7 +564,7 @@
         // ray-tracing.jsの関数をグローバルに公開
         setTimeout(async () => {
           try {
-            const main = await import('./main.js?v=2026-01-02q');
+            const main = await import('./main.js?v=2026-01-07a');
             const rayTracing = await import('./ray-tracing.js');
             const debugUtils = await import('./debug/debug-utils.js');
             
