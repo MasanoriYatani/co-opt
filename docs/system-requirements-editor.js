@@ -4,7 +4,7 @@
  * - System Evaluation UI is deprecated (no transfer)
  */
 
-import { OPERAND_DEFINITIONS, InspectorManager } from './merit-function-inspector.js';
+import { OPERAND_DEFINITIONS, InspectorManager } from './merit-function-inspector.js?v=2026-01-06c';
 
 class SystemRequirementsEditor {
   constructor() {
@@ -78,6 +78,15 @@ class SystemRequirementsEditor {
   }
 
   initializeTable() {
+    const operandKeys = (() => {
+      try {
+        const keys = InspectorManager.getAvailableOperands?.();
+        return Array.isArray(keys) ? keys : Object.keys(OPERAND_DEFINITIONS);
+      } catch (_) {
+        return Object.keys(OPERAND_DEFINITIONS);
+      }
+    })();
+
     const ensureEflBlocksDatalist = (blockIds) => {
       try {
         const id = 'coopt-efl-blocks-datalist';
@@ -171,7 +180,7 @@ class SystemRequirementsEditor {
         width: 200,
         editor: 'list',
         editorParams: {
-          values: Object.keys(OPERAND_DEFINITIONS).reduce((acc, key) => {
+          values: operandKeys.reduce((acc, key) => {
             acc[key] = OPERAND_DEFINITIONS[key].name;
             return acc;
           }, {})
