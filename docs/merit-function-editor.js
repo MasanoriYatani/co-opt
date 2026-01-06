@@ -283,7 +283,14 @@ class MeritFunctionEditor {
     }
     
     initializeTable() {
-        const HIDDEN_OPERANDS_IN_UI = new Set(['REAY', 'RSCE', 'TRAC', 'DIST']);
+        const operandKeys = (() => {
+            try {
+                const keys = InspectorManager.getAvailableOperands?.();
+                return Array.isArray(keys) ? keys : Object.keys(OPERAND_DEFINITIONS);
+            } catch (_) {
+                return Object.keys(OPERAND_DEFINITIONS);
+            }
+        })();
 
         // Tabulatorカラム定義
         const columns = [
@@ -294,7 +301,7 @@ class MeritFunctionEditor {
                 width: 180, 
                 editor: "list",
                 editorParams: {
-                    values: Object.keys(OPERAND_DEFINITIONS).filter((key) => !HIDDEN_OPERANDS_IN_UI.has(key)).reduce((acc, key) => {
+                    values: operandKeys.reduce((acc, key) => {
                         acc[key] = OPERAND_DEFINITIONS[key].name;
                         return acc;
                     }, {})

@@ -443,7 +443,23 @@ export const OPERAND_DEFINITIONS = {
   }
 };
 
-const HIDDEN_OPERANDS_IN_UI = new Set(['REAY', 'RSCE', 'TRAC', 'DIST']);
+// Only expose operands that are implemented and intended for the UI.
+// Keep other definitions for backward compatibility / future work, but hide them from dropdowns.
+const VISIBLE_OPERANDS_IN_UI = new Set([
+  'FL', 'EFL', 'BFL', 'IMD', 'OBJD', 'TSL',
+  'BEXP', 'EXPD', 'EXPP',
+  'ENPD', 'ENPP', 'ENPM',
+  'PMAG',
+  'FNO_OBJ', 'FNO_IMG', 'FNO_WRK',
+  'NA_OBJ', 'NA_IMG',
+  'EFFL',
+  'TOT3_SPH', 'TOT3_COMA', 'TOT3_ASTI', 'TOT3_FCUR', 'TOT3_DIST',
+  'TOT_LCA', 'TOT_TCA',
+  'CLRH',
+  'SPOT_SIZE_ANNULAR', 'SPOT_SIZE_RECT',
+  'LA_RMS_UM',
+  'ZERN_COEFF'
+]);
 
 /**
  * Inspector Display Manager
@@ -712,7 +728,7 @@ export class InspectorManager {
    * @returns {Array} Array of operand type names
    */
   static getAvailableOperands() {
-    return Object.keys(OPERAND_DEFINITIONS).filter((k) => !HIDDEN_OPERANDS_IN_UI.has(k));
+    return Object.keys(OPERAND_DEFINITIONS).filter((k) => VISIBLE_OPERANDS_IN_UI.has(k));
   }
   
   /**
