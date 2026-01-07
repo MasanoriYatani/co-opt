@@ -681,7 +681,7 @@
     {
       "id": 15,
       "object type": "",
-      "surfType": "Aspheric even",
+      "surfType": "Spherical",
       "comment": "",
       "radius": "36.187",
       "optimizeR": "",
@@ -695,27 +695,27 @@
       "optimizeRI": "",
       "abbe": "58.63",
       "optimizeAbbe": "",
-      "conic": "0",
+      "conic": "",
       "optimizeConic": "",
-      "coef1": "0",
+      "coef1": "",
       "optimizeCoef1": "",
-      "coef2": "0",
+      "coef2": "",
       "optimizeCoef2": "",
-      "coef3": "0",
+      "coef3": "",
       "optimizeCoef3": "",
-      "coef4": "0",
+      "coef4": "",
       "optimizeCoef4": "",
-      "coef5": "0",
+      "coef5": "",
       "optimizeCoef5": "",
-      "coef6": "0",
+      "coef6": "",
       "optimizeCoef6": "",
-      "coef7": "0",
+      "coef7": "",
       "optimizeCoef7": "",
-      "coef8": "0",
+      "coef8": "",
       "optimizeCoef8": "",
-      "coef9": "0",
+      "coef9": "",
       "optimizeCoef9": "",
-      "coef10": "0",
+      "coef10": "",
       "optimizeCoef10": "",
       "_blockType": "Lens",
       "_blockId": "Lens-3",
@@ -1031,8 +1031,8 @@
       "optimizeR": "",
       "thickness": "",
       "optimizeT": "",
-      "semidia": "",
-      "optimizeSemiDia": "",
+      "semidia": 20.95487594701684,
+      "optimizeSemiDia": "A",
       "material": "",
       "optimizeMaterial": "",
       "rindex": "",
@@ -2338,7 +2338,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:27:58.187Z",
-          "modified": "2026-01-07T13:28:38.639Z",
+          "modified": "2026-01-07T13:42:24.690Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -2936,6 +2936,10 @@
             "variables": {},
             "metadata": {
               "source": "legacy-opticalSystem"
+            },
+            "parameters": {
+              "optimizeSemiDia": "",
+              "semidia": 22
             }
           }
         ]
@@ -4085,7 +4089,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:28:51.847Z",
-          "modified": "2026-01-07T13:27:23.619Z",
+          "modified": "2026-01-07T13:42:14.053Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -4683,6 +4687,10 @@
             "variables": {},
             "metadata": {
               "source": "legacy-opticalSystem"
+            },
+            "parameters": {
+              "optimizeSemiDia": "",
+              "semidia": 22
             }
           }
         ]
@@ -5832,7 +5840,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:32:44.889Z",
-          "modified": "2026-01-06T14:27:08.010Z",
+          "modified": "2026-01-07T13:42:11.376Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -6430,6 +6438,10 @@
             "variables": {},
             "metadata": {
               "source": "legacy-opticalSystem"
+            },
+            "parameters": {
+              "optimizeSemiDia": "",
+              "semidia": 22
             }
           }
         ]
