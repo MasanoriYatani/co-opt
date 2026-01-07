@@ -803,8 +803,16 @@ export async function calculateAstigmatismData(opticalSystemRows, sourceRows, ob
         spotDiagramMode = false,
         rayCount = 51,
         interpolationPoints = 9,
-        verbose = false  // 詳細ログを制御
+        verbose = false,  // 詳細ログを制御
+        onProgress = null,
+        yieldEvery = 1
     } = options;
+
+    const progressCb = (typeof onProgress === 'function') ? onProgress : null;
+    const safeProgress = (percent, message) => {
+        try { progressCb?.({ percent, message }); } catch (_) {}
+    };
+    const yieldToUI = async () => new Promise(resolve => setTimeout(resolve, 0));
     
     if (verbose) {
         console.log('🎯🎯🎯 非点収差計算開始（新バージョン） 🎯🎯🎯');
@@ -815,6 +823,9 @@ export async function calculateAstigmatismData(opticalSystemRows, sourceRows, ob
     }
     
     try {
+        safeProgress(0, 'Preparing astigmatism...');
+        await yieldToUI();
+
         // Sourceテーブルから波長を取得
         const wavelengths = sourceRows.map(row => parseFloat(row.wavelength || row.Wavelength || 0.5876));
         if (verbose) console.log(`   波長数: ${wavelengths.length}`);
@@ -876,6 +887,9 @@ export async function calculateAstigmatismData(opticalSystemRows, sourceRows, ob
         
         console.log(`   計算するフィールド数: ${fieldSettings.length}`);
         console.log(`   最終フィールド設定:`, fieldSettings.map(f => `${f.displayName} (y=${f.y}°)`));
+
+        safeProgress(5, 'Computing reference focus...');
+        await yieldToUI();
 
         // スポット表示モードでは、既存のスポットダイアグラム計算ロジックをそのまま使用し、
         // 結果を非点データ形式に詰め替えて返す
@@ -1043,50 +1057,55 @@ export async function calculateAstigmatismData(opticalSystemRows, sourceRows, ob
             console.warn(`   ⚠️⚠️⚠️ 主波長の軸上フィールドで基準像面取得失敗 ⚠️⚠️⚠️`);
         }
         
-        // 各波長について計算（並列化で高速化）
+        // 各波長×各フィールドについて計算
+        // NOTE: Promise.microtasks won't allow UI repaint during long sync work.
+        // We intentionally run in small chunks and yield to the event loop.
         const startTime = performance.now();
-        const promises = [];
-        
-        for (const wavelength of wavelengths) {
+        const totalTasks = Math.max(1, wavelengths.length * fieldSettings.length);
+        let completed = 0;
+
+        for (let w = 0; w < wavelengths.length; w++) {
+            const wavelength = wavelengths[w];
             if (verbose) console.log(`\n📊 波長 ${wavelength}μm の計算中...`);
-            
-            // 各フィールド設定について計算を並列化
+
             for (let i = 0; i < fieldSettings.length; i++) {
                 const fieldSetting = fieldSettings[i];
-                
-                // 並列計算用のプロミスを作成
-                const promise = Promise.resolve().then(() => {
-                    return calculateFieldData(
-                        opticalSystemRows,
-                        fieldSetting,
-                        wavelength,
-                        i,
-                        fieldSettings.length,
-                        spotDiagramMode,
-                        rayCount,
-                        targetSurfaceIndex,
-                        stopSurfaceIndex,
-                        astigmatismData.primaryReferenceZ,
-                        verbose
-                    );
-                });
-                
-                promises.push(promise);
+
+                const result = calculateFieldData(
+                    opticalSystemRows,
+                    fieldSetting,
+                    wavelength,
+                    i,
+                    fieldSettings.length,
+                    spotDiagramMode,
+                    rayCount,
+                    targetSurfaceIndex,
+                    stopSurfaceIndex,
+                    astigmatismData.primaryReferenceZ,
+                    verbose
+                );
+
+                if (result) {
+                    astigmatismData.data.push(result);
+                }
+
+                completed++;
+                const pct = 10 + (85 * (completed / totalTasks));
+                safeProgress(Math.min(95, Math.max(0, pct)), `Calculating (${completed}/${totalTasks})...`);
+
+                if (yieldEvery > 0 && (completed % yieldEvery) === 0) {
+                    await yieldToUI();
+                }
             }
         }
-        
-        // すべての計算を並列実行
-        const results = await Promise.all(promises);
-        
-        // 結果をastigmatismData.dataに追加
-        results.forEach(result => {
-            if (result) {
-                astigmatismData.data.push(result);
-            }
-        });
+
+        safeProgress(95, 'Finalizing...');
+        await yieldToUI();
         
         const endTime = performance.now();
         console.log(`✅ 非点収差計算完了 (${(endTime - startTime).toFixed(0)}ms, ${astigmatismData.data.length}点)`);
+
+        safeProgress(100, 'Done');
         
         return astigmatismData;
         

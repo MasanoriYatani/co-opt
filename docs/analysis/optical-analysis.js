@@ -97,6 +97,10 @@ export function clearAllDrawing() {
 export async function showSpotDiagram(options = {}) {
     console.log('🎯 Starting spot diagram generation...');
 
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+
     // Default target container is the in-page one
     let containerTarget = 'spot-diagram-container';
     if (options && typeof options === 'object') {
@@ -115,6 +119,8 @@ export async function showSpotDiagram(options = {}) {
     
     try {
         setIsGeneratingSpotDiagram(true);
+
+        try { onProgress?.({ percent: 0, message: 'Preparing spot diagram...' }); } catch (_) {}
         
         const providedSurfaceIndex = Number.isInteger(options?.surfaceIndex) ? options.surfaceIndex : null;
         const providedRayCount = Number.isInteger(options?.rayCount) ? options.rayCount : null;
@@ -447,15 +453,16 @@ export async function showSpotDiagram(options = {}) {
             console.log('📊 Using default object data:', defaultObjectRows);
             
             // Import functions and use default object data
-            const { generateSpotDiagram, drawSpotDiagram } = await import('../eva-spot-diagram.js');
+            const { generateSpotDiagramAsync, drawSpotDiagram } = await import('../eva-spot-diagram.js');
             
-            const spotDiagramData = await generateSpotDiagram(
+            const spotDiagramData = await generateSpotDiagramAsync(
                 opticalSystemRows,
                 sourceRows || [],
                 defaultObjectRows,
                 surfaceNumber,
                 rayCount,
-                ringCount
+                ringCount,
+                { onProgress }
             );
             
             if (!spotDiagramData) {
@@ -463,24 +470,27 @@ export async function showSpotDiagram(options = {}) {
             }
             
             // Draw spot diagram with proper parameters
+            try { onProgress?.({ percent: 90, message: 'Rendering...' }); } catch (_) {}
             await drawSpotDiagram(
                 spotDiagramData, 
                 surfaceNumber,
                 containerTarget,
                 wavelength / 1000 // convert nm to μm
             );
+            try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
             
         } else {
             // Generate spot diagram with existing object data
-            const { generateSpotDiagram, drawSpotDiagram } = await import('../eva-spot-diagram.js');
+            const { generateSpotDiagramAsync, drawSpotDiagram } = await import('../eva-spot-diagram.js');
             
-            const spotDiagramData = await generateSpotDiagram(
+            const spotDiagramData = await generateSpotDiagramAsync(
                 opticalSystemRows,
                 sourceRows || [],
                 objectRows,
                 surfaceNumber,
                 rayCount,
-                ringCount
+                ringCount,
+                { onProgress }
             );
             
             if (!spotDiagramData) {
@@ -497,12 +507,15 @@ export async function showSpotDiagram(options = {}) {
             });
             
             // Draw spot diagram with proper parameters
+            try { onProgress?.({ percent: 90, message: 'Rendering...' }); } catch (_) {}
             await drawSpotDiagram(
                 spotDiagramData, 
                 surfaceNumber,
                 containerTarget,
                 wavelength / 1000 // convert nm to μm
             );
+
+            try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
             
             console.log('✅ [SPOT DIAGRAM] drawSpotDiagram call completed');
         }
@@ -534,6 +547,10 @@ export async function showSpotDiagram(options = {}) {
 export async function showTransverseAberrationDiagram(options = {}) {
     console.log('📊 Starting transverse aberration calculation...');
 
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+
     // Default target container is the in-page one
     let containerTarget = 'transverse-aberration-container';
     if (options && typeof options === 'object') {
@@ -552,6 +569,8 @@ export async function showTransverseAberrationDiagram(options = {}) {
     
     try {
         setIsGeneratingTransverseAberration(true);
+
+        try { onProgress?.({ percent: 0, message: 'Preparing transverse aberration...' }); } catch (_) {}
 
         const transverseRayCountInput = document.getElementById('transverse-ray-count-input');
         let rayCount = 51;
@@ -575,25 +594,28 @@ export async function showTransverseAberrationDiagram(options = {}) {
         console.log(`📊 評価面: Surface ${targetSurfaceIndex + 1}`);
         console.log(`📊 光線本数: ${rayCount}本`);
 
-        const { getPrimaryWavelengthForAberration, calculateTransverseAberration } = await import('../eva-transverse-aberration.js');
+        const { getPrimaryWavelengthForAberration, calculateTransverseAberrationAsync } = await import('../eva-transverse-aberration.js');
         const { plotTransverseAberrationDiagram } = await import('../eva-transverse-aberration-plot.js');
 
         const wavelength = getPrimaryWavelengthForAberration(); // μm
         console.log(`📊 Wavelength: ${wavelength} μm`);
 
-        const aberrationData = calculateTransverseAberration(
+        const aberrationData = await calculateTransverseAberrationAsync(
             opticalSystemRows,
             targetSurfaceIndex,
             null,
             wavelength,
-            rayCount
+            rayCount,
+            { onProgress }
         );
 
         if (!aberrationData) {
             throw new Error('Failed to calculate transverse aberration data');
         }
 
+        try { onProgress?.({ percent: 95, message: 'Rendering...' }); } catch (_) {}
         plotTransverseAberrationDiagram(aberrationData, containerTarget, typeof containerTarget === 'string' ? document : containerTarget.ownerDocument);
+        try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
         console.log('✅ Transverse aberration diagram generated successfully');
     } catch (error) {
         console.error('❌ Transverse aberration diagram error:', error);
@@ -616,6 +638,10 @@ export async function showTransverseAberrationDiagram(options = {}) {
 export async function showAstigmatismDiagram(options = {}) {
     console.log('📊 Starting astigmatism calculation...');
 
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+
     // Default target container is the in-page one
     let containerTarget = 'astigmatic-field-curves-container';
     if (options && typeof options === 'object') {
@@ -633,6 +659,8 @@ export async function showAstigmatismDiagram(options = {}) {
 
     try {
         setIsGeneratingTransverseAberration(true);
+
+        try { onProgress?.({ percent: 0, message: 'Preparing astigmatism...' }); } catch (_) {}
 
         const opticalSystemRows = getOpticalSystemRows();
         const sourceRows = getSourceRows();
@@ -715,14 +743,17 @@ export async function showAstigmatismDiagram(options = {}) {
                 spotDiagramMode: false,
                 rayCount: rayCount,
                 interpolationPoints: 10,
-                verbose: true
+                verbose: true,
+                onProgress
             }
         );
 
         if (!fieldCurvesData || !fieldCurvesData.data || fieldCurvesData.data.length === 0) {
             console.warn('⚠️ 非点収差曲線データの生成に失敗しました');
         } else {
+            try { onProgress?.({ percent: 95, message: 'Rendering...' }); } catch (_) {}
             plotAstigmaticFieldCurves(containerTarget, fieldCurvesData);
+            try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
         }
 
         console.log('✅ Astigmatism diagram generated successfully');
@@ -740,6 +771,10 @@ export async function showAstigmatismDiagram(options = {}) {
  */
 export async function showLongitudinalAberrationDiagram(options = {}) {
     console.log('📊 Starting spherical aberration calculation...');
+
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
 
     // Default target container is the in-page one
     let containerTarget = 'longitudinal-aberration-container';
@@ -759,6 +794,8 @@ export async function showLongitudinalAberrationDiagram(options = {}) {
     
     try {
         setIsGeneratingTransverseAberration(true);
+
+        try { onProgress?.({ percent: 0, message: 'Preparing spherical aberration...' }); } catch (_) {}
         
         // Get selected parameters with fallback defaults
         const rayCountInput = document.getElementById('longitudinal-ray-count-input');
@@ -822,15 +859,16 @@ export async function showLongitudinalAberrationDiagram(options = {}) {
             throw new Error('No object data available');
         }
         
-        // Calculate longitudinal aberration using new module
-        const { calculateLongitudinalAberration } = await import('../eva-longitudinal-aberration.js');
+        // Calculate longitudinal aberration using async wrapper (allows progress UI repaint)
+        const { calculateLongitudinalAberrationAsync } = await import('../eva-longitudinal-aberration.js');
         const { plotLongitudinalAberrationDiagram } = await import('../eva-longitudinal-aberration-plot.js');
         
-        const aberrationData = await calculateLongitudinalAberration(
+        const aberrationData = await calculateLongitudinalAberrationAsync(
             opticalSystemRows,
             surfaceIndex,
             wavelengths, // Array of wavelengths from Source table
-            rayCount
+            rayCount,
+            { onProgress }
         );
         
         if (!aberrationData) {
@@ -838,7 +876,10 @@ export async function showLongitudinalAberrationDiagram(options = {}) {
         }
         
         // Plot spherical aberration diagram
+        try { onProgress?.({ percent: 95, message: 'Rendering...' }); } catch (_) {}
         await plotLongitudinalAberrationDiagram(aberrationData, containerTarget);
+
+        try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
         
         console.log('✅ Spherical aberration diagram generated successfully');
         
@@ -1103,8 +1144,25 @@ export async function runPlotPerformanceTest() {
  */
 export async function showIntegratedAberrationDiagram(options = {}) {
     console.log('📊 Starting integrated aberration diagram calculation...');
+
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+
+    const mapProgress = (base, span, prefix) => {
+        if (!onProgress) return null;
+        return (evt) => {
+            try {
+                const p = Number(evt?.percent);
+                const msg = evt?.message || evt?.phase || 'Working...';
+                const mapped = Number.isFinite(p) ? (base + (span * p) / 100) : base;
+                onProgress({ percent: mapped, message: prefix ? `${prefix}: ${msg}` : msg });
+            } catch (_) {}
+        };
+    };
     
     try {
+        try { onProgress?.({ percent: 0, message: 'Starting...' }); } catch (_) {}
         // 光学系データを取得
         const opticalSystemRows = getOpticalSystemRows();
         const objectRows = getObjectRows();
@@ -1152,13 +1210,14 @@ export async function showIntegratedAberrationDiagram(options = {}) {
         
         // 1. 球面収差データを計算
         console.log('📊 Calculating spherical aberration...');
-        const { calculateLongitudinalAberration } = await import('../eva-longitudinal-aberration.js');
+        const { calculateLongitudinalAberrationAsync } = await import('../eva-longitudinal-aberration.js');
         
-        const longitudinalData = await calculateLongitudinalAberration(
+        const longitudinalData = await calculateLongitudinalAberrationAsync(
             opticalSystemRows,
             surfaceIndex,
             wavelengths,
-            rayCountSpherical
+            rayCountSpherical,
+            { onProgress: mapProgress(5, 30, 'Spherical') }
         );
         
         if (!longitudinalData) {
@@ -1174,7 +1233,7 @@ export async function showIntegratedAberrationDiagram(options = {}) {
             sourceRows,
             objectRows,
             surfaceIndex,
-            { rayCount: rayCountAstigmatism, interpolationPoints: 10 }
+            { rayCount: rayCountAstigmatism, interpolationPoints: 10, onProgress: mapProgress(35, 35, 'Astigmatism') }
         );
         
         if (!astigmatismData) {
@@ -1241,12 +1300,15 @@ export async function showIntegratedAberrationDiagram(options = {}) {
         
         // 各波長で歪曲収差を計算
         const distortionDataByWavelength = [];
-        for (const wavelength of wavelengths) {
-            const distData = calculateDistortionData(
+        for (let wlIndex = 0; wlIndex < wavelengths.length; wlIndex++) {
+            const wavelength = wavelengths[wlIndex];
+            const wlBase = 70 + (25 * wlIndex) / Math.max(1, wavelengths.length);
+            const wlSpan = 25 / Math.max(1, wavelengths.length);
+            const distData = await calculateDistortionData(
                 opticalSystemRows,
                 fieldValues,
                 wavelength,
-                { heightMode }
+                { heightMode, onProgress: mapProgress(wlBase, wlSpan, `Distortion (λ=${wavelength.toFixed(4)}μm)`) }
             );
             if (distData) {
                 distortionDataByWavelength.push({
@@ -1263,6 +1325,8 @@ export async function showIntegratedAberrationDiagram(options = {}) {
         // 4. 統合収差図を表示
         console.log('📊 Plotting integrated aberration diagram...');
         const { plotIntegratedAberrationDiagram } = await import('../eva-integrated-aberration-plot.js');
+
+        try { onProgress?.({ percent: 96, message: 'Rendering...' }); } catch (_) {}
         
         // System Configuration名を取得
         const systemConfig = JSON.parse(localStorage.getItem('systemConfigurations') || '{}');
@@ -1277,6 +1341,8 @@ export async function showIntegratedAberrationDiagram(options = {}) {
             ...(options?.containerElement ? { containerElement: options.containerElement } : {}),
             ...(options?.infoElement ? { infoElement: options.infoElement } : {})
         });
+
+        try { onProgress?.({ percent: 100, message: 'Done' }); } catch (_) {}
         
         console.log('✅ Integrated aberration diagram generated successfully');
         

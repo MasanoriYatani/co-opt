@@ -1806,7 +1806,7 @@ function setupDistortionButton() {
                     throw new Error('generateDistortionPlots 関数が見つかりません');
                 }
                 
-                const data = window.generateDistortionPlots();
+                const data = await window.generateDistortionPlots();
                 if (!data) {
                     throw new Error('歪曲収差データの計算に失敗しました');
                 }
@@ -1833,7 +1833,7 @@ function setupDistortionButton() {
                 const gridSizeSelect = document.getElementById('grid-size-select');
                 const gridSize = gridSizeSelect ? parseInt(gridSizeSelect.value) : 20;
                 
-                const data = window.generateGridDistortionPlot({ gridSize });
+                const data = await window.generateGridDistortionPlot({ gridSize });
                 if (!data) {
                     throw new Error('グリッド歪曲データの計算に失敗しました');
                 }
@@ -4625,8 +4625,8 @@ async function showMTFDiagram({ wavelengthMicrons, objectIndex, maxFrequencyLpmm
         return { freq, mtfVals };
     };
 
-    // Tangential/Sagittal: without directional interpolation, choose the nearest principal axis
-    // based on field direction (x-dominant => tangential=x, otherwise tangential=y).
+    // Meridional/Sagittal: without directional interpolation, choose the nearest principal axis
+    // based on field direction (x-dominant => meridional=x, otherwise meridional=y).
     const fieldVecRaw = (/\bangle\b/.test(objectTypeLower))
         ? { x: safeNumber(fieldAngle?.x, 0), y: safeNumber(fieldAngle?.y, 0) }
         : { x: safeNumber(xHeight, 0), y: safeNumber(yHeight, 0) };
@@ -4649,7 +4649,7 @@ async function showMTFDiagram({ wavelengthMicrons, objectIndex, maxFrequencyLpmm
         y: tan.mtfVals,
         type: 'scatter',
         mode: 'lines',
-        name: 'Tangential'
+        name: 'Meridional'
     };
     const traceSag = {
         x: sag.freq,

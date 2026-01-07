@@ -1122,3 +1122,73 @@ export function calculateLongitudinalAberration(
         }
     }
 }
+
+// Async wrapper for UI progress bars: runs per-wavelength chunks and yields to the event loop.
+// Keeps the original synchronous API intact (used by merit-function evaluation).
+export async function calculateLongitudinalAberrationAsync(
+    opticalSystemRows,
+    targetSurfaceIndex,
+    wavelengths = null,
+    rayCount = 51,
+    options = null
+) {
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+
+    const yieldToUI = async () => new Promise(resolve => setTimeout(resolve, 0));
+    const safeProgress = (percent, message) => {
+        try { onProgress?.({ percent, message }); } catch (_) {}
+    };
+
+    // Match sync behavior: if wavelengths is null/empty, pull from Source table.
+    const wlList = (!wavelengths || wavelengths.length === 0) ? getAllWavelengths() : wavelengths;
+    const wlCount = Array.isArray(wlList) ? wlList.length : 0;
+
+    safeProgress(0, 'Starting spherical aberration...');
+    await yieldToUI();
+
+    const meridionalData = [];
+    const sagittalData = [];
+    let lastMeta = null;
+
+    for (let i = 0; i < wlCount; i++) {
+        const wl = wlList[i];
+        const base = 5;
+        const span = 85;
+        const pct = base + (span * (i / Math.max(1, wlCount)));
+        safeProgress(Math.min(95, Math.max(0, pct)), `Calculating wavelength ${i + 1}/${wlCount}...`);
+
+        // Compute this wavelength using the existing synchronous implementation.
+        // Run it with the same rayCount/targetSurfaceIndex, and stitch results.
+        const partial = calculateLongitudinalAberration(
+            opticalSystemRows,
+            targetSurfaceIndex,
+            [wl],
+            rayCount,
+            options
+        );
+
+        if (partial && typeof partial === 'object') {
+            if (Array.isArray(partial.meridionalData)) meridionalData.push(...partial.meridionalData);
+            if (Array.isArray(partial.sagittalData)) sagittalData.push(...partial.sagittalData);
+            lastMeta = partial;
+        }
+
+        // Yield between wavelengths so progress UI can repaint.
+        await yieldToUI();
+    }
+
+    safeProgress(95, 'Finalizing...');
+    await yieldToUI();
+
+    // Preserve the sync function's output shape as closely as possible.
+    const out = (lastMeta && typeof lastMeta === 'object') ? { ...lastMeta } : {};
+    out.wavelengths = wlList;
+    out.targetSurface = targetSurfaceIndex;
+    out.meridionalData = meridionalData;
+    out.sagittalData = sagittalData;
+
+    safeProgress(100, 'Done');
+    return out;
+}

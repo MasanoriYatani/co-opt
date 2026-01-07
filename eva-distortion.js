@@ -80,8 +80,21 @@ function isFiniteSystem(opticalSystemRows) {
  * @param {Object} options - { heightMode?: boolean, objectDistance?: number }
  * @returns {Object} { fieldValues, idealHeights, realHeights, distortion, distortionPercent, meta }
  */
-export function calculateDistortionData(opticalSystemRows, fieldSamples, wavelength = 0.5876, options = {}) {
+export async function calculateDistortionData(opticalSystemRows, fieldSamples, wavelength = 0.5876, options = {}) {
   const { heightMode = false, objectDistance: objDistOverride } = options;
+  const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+    ? options.onProgress
+    : null;
+
+  const now = () => (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+  let lastYield = now();
+  const maybeYield = async () => {
+    const t = now();
+    if (t - lastYield >= 16) {
+      await new Promise(r => setTimeout(r, 0));
+      lastYield = now();
+    }
+  };
 
   if (!opticalSystemRows || !Array.isArray(opticalSystemRows)) {
     console.error('❌ calculateDistortionData: opticalSystemRows invalid');
@@ -114,7 +127,8 @@ export function calculateDistortionData(opticalSystemRows, fieldSamples, wavelen
     ? -(imageDistance / objectDistance)
     : -1; // fallback magnification
 
-  for (const sample of fieldSamples) {
+  for (let sampleIndex = 0; sampleIndex < fieldSamples.length; sampleIndex++) {
+    const sample = fieldSamples[sampleIndex];
     let hIdeal;
     let thetaDeg = null;
     let fieldSetting;
@@ -172,6 +186,16 @@ export function calculateDistortionData(opticalSystemRows, fieldSamples, wavelen
       distortion.push(d);
       distortionPercent.push(d * 100.0);
     }
+
+    if (onProgress) {
+      try {
+        const percent = ((sampleIndex + 1) / fieldSamples.length) * 100;
+        const label = heightMode ? `h=${sample}` : `θ=${sample}°`;
+        onProgress({ percent, message: `Distortion sample ${sampleIndex + 1}/${fieldSamples.length} (${label})` });
+      } catch (_) {}
+    }
+
+    await maybeYield();
   }
 
   return {
@@ -198,7 +222,20 @@ export function calculateDistortionData(opticalSystemRows, fieldSamples, wavelen
  * @param {number} wavelength - wavelength (μm) for chief ray tracing.
  * @returns {Object} { idealGrid, realGrid, gridSize, maxFieldAngle, meta }
  */
-export function calculateGridDistortion(opticalSystemRows, gridSize = 20, wavelength = 0.5876) {
+export async function calculateGridDistortion(opticalSystemRows, gridSize = 20, wavelength = 0.5876, options = {}) {
+  const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+    ? options.onProgress
+    : null;
+
+  const now = () => (typeof performance !== 'undefined' && typeof performance.now === 'function') ? performance.now() : Date.now();
+  let lastYield = now();
+  const maybeYield = async () => {
+    const t = now();
+    if (t - lastYield >= 16) {
+      await new Promise(r => setTimeout(r, 0));
+      lastYield = now();
+    }
+  };
   if (!opticalSystemRows || !Array.isArray(opticalSystemRows)) {
     console.error('❌ calculateGridDistortion: opticalSystemRows invalid');
     return null;
@@ -223,6 +260,9 @@ export function calculateGridDistortion(opticalSystemRows, gridSize = 20, wavele
 
   // Generate grid lines (from -maxFieldAngle to +maxFieldAngle)
   const step = (2 * maxFieldAngle) / (gridSize - 1);
+
+  const totalPoints = gridSize * gridSize;
+  let completedPoints = 0;
 
   for (let i = 0; i < gridSize; i++) {
     const thetaY = -maxFieldAngle + i * step;
@@ -287,6 +327,16 @@ export function calculateGridDistortion(opticalSystemRows, gridSize = 20, wavele
 
       realGrid.x.push(hRealX);
       realGrid.y.push(hRealY);
+
+      completedPoints++;
+      if (onProgress) {
+        try {
+          const percent = (completedPoints / totalPoints) * 100;
+          onProgress({ percent, message: `Grid distortion ${completedPoints}/${totalPoints}` });
+        } catch (_) {}
+      }
+
+      await maybeYield();
     }
   }
 

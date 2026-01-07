@@ -15,6 +15,21 @@ import {
 
 let autoSaveIntervalId = null;
 let isConfigurationSwitching = false;
+let beforeUnloadHandlerInstalled = false;
+
+function setConfigControlsEnabled(enabled) {
+  const ids = [
+    'config-select',
+    'add-config-btn',
+    'delete-config-btn',
+    'duplicate-config-btn',
+    'rename-config-btn'
+  ];
+  for (const id of ids) {
+    const el = document.getElementById(id);
+    if (el) el.disabled = !enabled;
+  }
+}
 
 function shouldSkipAutoSave() {
   try {
@@ -203,23 +218,28 @@ async function handleConfigurationChange(event) {
   const currentConfigId = getActiveConfigId();
   
   if (newConfigId === currentConfigId) return;
+
+  // Prevent overlapping async switches which can overwrite the wrong config
+  // (rare but possible with fast UI interactions).
+  if (isConfigurationSwitching) {
+    try { event.target.value = String(currentConfigId); } catch (_) {}
+    return;
+  }
+  isConfigurationSwitching = true;
+  stopAutoSave();
+  setConfigControlsEnabled(false);
   
   console.log(`🔄 [Configuration] Switching from ${currentConfigId} to ${newConfigId}...`);
   
   // 現在の編集内容を保存
   saveCurrentToActiveConfiguration();
 
-  // NOTE: location.reload() triggers beforeunload.
-  // If activeConfigId is already switched when beforeunload fires, the old table contents
-  // can be saved into the NEW active config, overwriting it. Guard autosave during switching.
-  isConfigurationSwitching = true;
-  stopAutoSave();
-  
-  // 新しいConfigurationに切り替え
-  setActiveConfiguration(newConfigId);
-  
-  // 新しいConfigurationのデータをロード
-  await loadActiveConfigurationToTables({ applyToUI: true });
+  try {
+    // 新しいConfigurationに切り替え
+    setActiveConfiguration(newConfigId);
+    
+    // 新しいConfigurationのデータをロード
+    await loadActiveConfigurationToTables({ applyToUI: true });
 
   // Config切替後、Objectリストを即時反映（PSF/Wavefront）
   try {
@@ -267,9 +287,12 @@ async function handleConfigurationChange(event) {
     console.warn('⚠️ [Configuration] Failed to request 3D popup redraw:', e);
   }
 
-  // Switching guard解除 + autosave再開
-  isConfigurationSwitching = false;
-  setupAutoSave();
+  } finally {
+    // Switching guard解除 + autosave再開
+    isConfigurationSwitching = false;
+    setConfigControlsEnabled(true);
+    setupAutoSave();
+  }
 }
 
 /**
@@ -394,10 +417,13 @@ function setupAutoSave() {
   }
   
   // ページ離脱時に保存
-  window.addEventListener('beforeunload', () => {
-    if (shouldSkipAutoSave()) return;
-    saveCurrentToActiveConfiguration();
-  });
+  if (!beforeUnloadHandlerInstalled) {
+    beforeUnloadHandlerInstalled = true;
+    window.addEventListener('beforeunload', () => {
+      if (shouldSkipAutoSave()) return;
+      saveCurrentToActiveConfiguration();
+    });
+  }
 }
 
 // グローバルエクスポート

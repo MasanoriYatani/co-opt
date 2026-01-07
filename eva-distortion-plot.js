@@ -206,12 +206,13 @@ export function plotDistortionPercent(dataArray, targetDivId = 'distortion-perce
   }
 }
 
-export function generateDistortionPlots({
+export async function generateDistortionPlots({
   opticalSystemRows = null,
   fieldAnglesDeg = null,
   wavelength = null,
   step = null,
-  targetElement = null
+  targetElement = null,
+  onProgress = null
 } = {}) {
   const rows = opticalSystemRows || getOpticalSystemRows();
   let objects = [];
@@ -255,9 +256,27 @@ export function generateDistortionPlots({
   }
 
   // Calculate distortion for all wavelengths
-  const allData = wavelengths
-    .map(wl => calculateDistortionData(rows, fieldValues, wl, { heightMode }))
-    .filter(data => data !== null);
+  const progress = (typeof onProgress === 'function') ? onProgress : null;
+  const allData = [];
+  for (let wlIndex = 0; wlIndex < wavelengths.length; wlIndex++) {
+    const wl = wavelengths[wlIndex];
+    const base = (wlIndex / Math.max(1, wavelengths.length)) * 100;
+    const span = 100 / Math.max(1, wavelengths.length);
+    const dist = await calculateDistortionData(rows, fieldValues, wl, {
+      heightMode,
+      onProgress: progress
+        ? (evt) => {
+            try {
+              const p = Number(evt?.percent);
+              const msg = evt?.message || evt?.phase || 'Working...';
+              const mapped = Number.isFinite(p) ? (base + (span * p) / 100) : base;
+              progress({ percent: mapped, message: `Distortion (λ=${wl.toFixed(4)} μm): ${msg}` });
+            } catch (_) {}
+          }
+        : null
+    });
+    if (dist) allData.push(dist);
+  }
 
   if (allData.length === 0) {
     console.warn('Failed to calculate distortion data for any wavelength');
@@ -416,15 +435,16 @@ export function plotGridDistortion(data, targetDivId = 'distortion-grid') {
  * @param {Object} options - configuration options.
  * @returns {Object} grid distortion data.
  */
-export function generateGridDistortionPlot({
+export async function generateGridDistortionPlot({
   opticalSystemRows = null,
   gridSize = 20,
   wavelength = 0.5876,
-  targetElement = null
+  targetElement = null,
+  onProgress = null
 } = {}) {
   const rows = opticalSystemRows || getOpticalSystemRows();
   
-  const data = calculateGridDistortion(rows, gridSize, wavelength);
+  const data = await calculateGridDistortion(rows, gridSize, wavelength, { onProgress });
   if (!data) {
     console.error('Failed to calculate grid distortion');
     return null;

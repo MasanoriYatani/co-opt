@@ -1,12 +1,12 @@
 /**
  * System Evaluation Inspector Configuration
  * Manages operand definitions and inspector display logic
- */
+    description: "MTF Meridional",
 
 // Operand definitions in JSON format
 export const OPERAND_DEFINITIONS = {
   "ZERN_COEFF": {
-    name: "Zernike Coefficient (waves/µm)",
+    notes: "Measures meridional MTF at specified frequency. Target 1.0 for diffraction limit."
     description: "Nth Zernike coefficient (Noll index) for the current system (live). n=0 returns RMS over coefficients.",
     parameters: [
       { key: "param1", label: "n (Noll)", description: "0 = RMS, 1.. = coefficient index" },
@@ -410,14 +410,14 @@ export const OPERAND_DEFINITIONS = {
   },
   "MTFT": {
     name: "MTFT",
-    description: "MTF Tangential",
+    description: "MTF Meridional",
     parameters: [
       { key: "param1", label: "Frequency (lp/mm)" },
       { key: "param2", label: "Field" },
       { key: "param3", label: "Reserved" },
       { key: "param4", label: "Reserved" }
     ],
-    notes: "Measures tangential MTF at specified frequency. Target 1.0 for diffraction limit."
+    notes: "Measures meridional MTF at specified frequency. Target 1.0 for diffraction limit."
   },
   "EDGE": {
     name: "EDGE",

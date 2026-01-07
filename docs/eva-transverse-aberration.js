@@ -191,6 +191,77 @@ export function calculateTransverseAberration(opticalSystemRows, targetSurfaceIn
     return aberrationData;
 }
 
+// Async wrapper for UI progress bars: runs per-field chunks and yields to the event loop.
+// Keeps the original synchronous API intact.
+export async function calculateTransverseAberrationAsync(
+    opticalSystemRows,
+    targetSurfaceIndex,
+    fieldSettings = null,
+    wavelength = 0.5876,
+    rayCount = 51,
+    options = null
+) {
+    const onProgress = (options && typeof options === 'object' && typeof options.onProgress === 'function')
+        ? options.onProgress
+        : null;
+    const yieldEvery = Number.isInteger(options?.yieldEvery) ? options.yieldEvery : 1;
+    const yieldToUI = async () => new Promise(resolve => setTimeout(resolve, 0));
+    const safeProgress = (percent, message) => {
+        try { onProgress?.({ percent, message }); } catch (_) {}
+    };
+
+    // Mirror sync behavior for fieldSettings.
+    const fields = (!fieldSettings || !Array.isArray(fieldSettings) || fieldSettings.length === 0)
+        ? getFieldSettingsFromObject()
+        : fieldSettings;
+
+    const totalFields = Array.isArray(fields) ? fields.length : 0;
+    safeProgress(0, 'Starting transverse aberration...');
+    await yieldToUI();
+
+    let baseMeta = null;
+    const meridionalData = [];
+    const sagittalData = [];
+
+    for (let i = 0; i < totalFields; i++) {
+        const fs = fields[i];
+        const pct = 5 + (85 * (i / Math.max(1, totalFields)));
+        const name = fs?.displayName ? String(fs.displayName) : `Field ${i + 1}`;
+        safeProgress(Math.min(95, Math.max(0, pct)), `Calculating ${name} (${i + 1}/${totalFields})...`);
+
+        const partial = calculateTransverseAberration(
+            opticalSystemRows,
+            targetSurfaceIndex,
+            [fs],
+            wavelength,
+            rayCount
+        );
+
+        if (partial && typeof partial === 'object') {
+            if (!baseMeta) baseMeta = partial;
+            if (Array.isArray(partial.meridionalData)) meridionalData.push(...partial.meridionalData);
+            if (Array.isArray(partial.sagittalData)) sagittalData.push(...partial.sagittalData);
+        }
+
+        if (yieldEvery > 0 && ((i + 1) % yieldEvery) === 0) {
+            await yieldToUI();
+        }
+    }
+
+    safeProgress(95, 'Finalizing...');
+    await yieldToUI();
+
+    const out = (baseMeta && typeof baseMeta === 'object') ? { ...baseMeta } : {};
+    out.fieldSettings = fields;
+    out.wavelength = wavelength;
+    out.targetSurface = targetSurfaceIndex;
+    out.meridionalData = meridionalData;
+    out.sagittalData = sagittalData;
+
+    safeProgress(100, 'Done');
+    return out;
+}
+
 /**
  * フィールド設定に応じて十字光線を生成
  * @param {Array} opticalSystemRows - 光学系データ

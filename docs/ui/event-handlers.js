@@ -1943,6 +1943,10 @@ export function setupOpticalSystemChangeListeners(scene) {
     <div class="note">
         Note: Select a surface where rays can reach (usually Image surface or earlier).
     </div>
+    <div id="popup-spot-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-spot-progress-text" style="margin-bottom: 6px;">Calculating spot diagram...</div>
+        <progress id="popup-spot-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
+    </div>
     <div class="content">
         <div id="popup-spot-diagram-container"></div>
     </div>
@@ -2065,6 +2069,18 @@ export function setupOpticalSystemChangeListeners(scene) {
             const popupContainer = document.getElementById('popup-spot-diagram-container');
             if (popupContainer) popupContainer.innerHTML = '';
 
+            const progressWrapper = document.getElementById('popup-spot-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-spot-progressbar');
+            const progressTextEl = document.getElementById('popup-spot-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             const openerRay = getOpenerEl('ray-count-input');
             const openerRing = getOpenerEl('ring-count-select');
             const openerSurface = getOpenerEl('surface-number-select');
@@ -2088,15 +2104,28 @@ export function setupOpticalSystemChangeListeners(scene) {
             }
 
             try {
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
+
                 await window.opener.showSpotDiagram({
                     surfaceIndex: popupSurface && popupSurface.value !== '' ? parseInt(popupSurface.value, 10) : undefined,
                     rayCount: popupRay && popupRay.value !== '' ? parseInt(popupRay.value, 10) : undefined,
                     ringCount: popupRing && popupRing.value !== '' ? parseInt(popupRing.value, 10) : undefined,
                     configId: popupCfg && popupCfg.value !== '' ? String(popupCfg.value) : undefined,
-                    containerElement: popupContainer
+                    containerElement: popupContainer,
+                    onProgress
                 });
+                setProgress(100, 'Done');
             } catch (e) {
                 if (popupContainer) popupContainer.textContent = String(e && e.message ? e.message : e);
+                setProgress(100, 'Failed');
             }
         });
 
@@ -2212,6 +2241,10 @@ export function setupOpticalSystemChangeListeners(scene) {
         <span class="note-inline" style="font-size:12px;color:#666;">(Always normalized by stop diameter)</span>
         <button id="popup-show-spherical-aberration-btn" type="button">Show spherical aberration diagram</button>
     </div>
+    <div id="popup-spherical-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-spherical-progress-text" style="margin-bottom: 6px;">Calculating spherical aberration...</div>
+        <progress id="popup-spherical-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
+    </div>
     <div class="note">
         Note: X-axis is longitudinal aberration (mm), Y-axis is normalized pupil coordinate.
     </div>
@@ -2237,6 +2270,18 @@ export function setupOpticalSystemChangeListeners(scene) {
         }
 
         window.renderSphericalAberration = async () => {
+            const progressWrapper = document.getElementById('popup-spherical-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-spherical-progressbar');
+            const progressTextEl = document.getElementById('popup-spherical-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             const popupRay = document.getElementById('popup-longitudinal-ray-count-input');
             const rayCount = popupRay ? parseInt(popupRay.value, 10) : 51;
             const openerRay = getOpenerEl('longitudinal-ray-count-input');
@@ -2251,12 +2296,24 @@ export function setupOpticalSystemChangeListeners(scene) {
                 if (!window.opener || typeof window.opener.showLongitudinalAberrationDiagram !== 'function') {
                     throw new Error('showLongitudinalAberrationDiagram is not available on opener');
                 }
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
                 await window.opener.showLongitudinalAberrationDiagram({
                     rayCount: Number.isFinite(rayCount) ? rayCount : 51,
-                    containerElement: containerEl
+                    containerElement: containerEl,
+                    onProgress
                 });
+                setProgress(100, 'Done');
             } catch (err) {
                 console.error(err);
+                setProgress(100, 'Failed');
                 if (containerEl) {
                     containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate spherical aberration diagram. Check console.</div>';
                 }
@@ -2366,8 +2423,12 @@ export function setupOpticalSystemChangeListeners(scene) {
     <div class="controls">
         <button id="popup-show-astigmatism-btn" type="button">Show astigmatism diagram</button>
     </div>
+    <div id="popup-astigmatism-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-astigmatism-progress-text" style="margin-bottom: 6px;">Calculating astigmatism...</div>
+        <progress id="popup-astigmatism-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
+    </div>
     <div class="note">
-        Note: Astigmatism diagram shows sagittal and tangential focal positions across field.
+        Note: Astigmatism diagram shows sagittal and meridional focal positions across field.
     </div>
     <div class="content">
         <div id="popup-astigmatic-field-curves-container"></div>
@@ -2378,15 +2439,39 @@ export function setupOpticalSystemChangeListeners(scene) {
             const containerEl = document.getElementById('popup-astigmatic-field-curves-container');
             if (containerEl) containerEl.innerHTML = '';
 
+            const progressWrapper = document.getElementById('popup-astigmatism-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-astigmatism-progressbar');
+            const progressTextEl = document.getElementById('popup-astigmatism-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             try {
                 if (!window.opener || typeof window.opener.showAstigmatismDiagram !== 'function') {
                     throw new Error('showAstigmatismDiagram is not available on opener');
                 }
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
                 await window.opener.showAstigmatismDiagram({
-                    containerElement: containerEl
+                    containerElement: containerEl,
+                    onProgress
                 });
+                setProgress(100, 'Done');
             } catch (err) {
                 console.error(err);
+                setProgress(100, 'Failed');
                 if (containerEl) {
                     containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate astigmatism diagram. Check console.</div>';
                 }
@@ -2512,6 +2597,10 @@ export function setupOpticalSystemChangeListeners(scene) {
         </select>
         <button id="popup-show-distortion-grid-btn" type="button">Show grid distortion</button>
     </div>
+    <div id="popup-distortion-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-distortion-progress-text" style="margin-bottom: 6px;">Calculating distortion...</div>
+        <progress id="popup-distortion-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
+    </div>
     <div class="content">
         <div id="popup-distortion-percent-area" class="plot-area"><div id="popup-distortion-percent"></div></div>
         <div id="popup-distortion-grid-area" class="plot-area"><div id="popup-distortion-grid"></div></div>
@@ -2569,14 +2658,37 @@ export function setupOpticalSystemChangeListeners(scene) {
             // Default to full-height distortion plot
             setGridVisible(false);
 
+            const progressWrapper = document.getElementById('popup-distortion-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-distortion-progressbar');
+            const progressTextEl = document.getElementById('popup-distortion-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             try {
                 if (!window.opener || typeof window.opener.generateDistortionPlots !== 'function') {
                     throw new Error('generateDistortionPlots is not available on opener');
                 }
-                window.opener.generateDistortionPlots({ targetElement: percentEl });
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
+                await window.opener.generateDistortionPlots({ targetElement: percentEl, onProgress });
+                setProgress(100, 'Done');
                 setTimeout(resizePlots, 0);
             } catch (err) {
                 console.error(err);
+                setProgress(100, 'Failed');
                 if (percentEl) {
                     percentEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate distortion diagram. Check console.</div>';
                 }
@@ -2589,6 +2701,18 @@ export function setupOpticalSystemChangeListeners(scene) {
             // Split view when grid is requested
             setGridVisible(true);
 
+            const progressWrapper = document.getElementById('popup-distortion-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-distortion-progressbar');
+            const progressTextEl = document.getElementById('popup-distortion-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             const gridSizeEl = document.getElementById('popup-distortion-grid-size');
             const gridSize = gridSizeEl ? parseInt(gridSizeEl.value, 10) : 20;
             const openerGrid = getOpenerEl('grid-size-select');
@@ -2598,10 +2722,21 @@ export function setupOpticalSystemChangeListeners(scene) {
                 if (!window.opener || typeof window.opener.generateGridDistortionPlot !== 'function') {
                     throw new Error('generateGridDistortionPlot is not available on opener');
                 }
-                window.opener.generateGridDistortionPlot({ gridSize: Number.isFinite(gridSize) ? gridSize : 20, targetElement: gridEl });
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
+                await window.opener.generateGridDistortionPlot({ gridSize: Number.isFinite(gridSize) ? gridSize : 20, targetElement: gridEl, onProgress });
+                setProgress(100, 'Done');
                 setTimeout(resizePlots, 0);
             } catch (err) {
                 console.error(err);
+                setProgress(100, 'Failed');
                 if (gridEl) {
                     gridEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate grid distortion. Check console.</div>';
                 }
@@ -2703,6 +2838,10 @@ export function setupOpticalSystemChangeListeners(scene) {
     <div class="controls">
         <button id="popup-show-integrated-aberration-btn" type="button">Show integrated aberration diagram</button>
     </div>
+    <div id="popup-integrated-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
+        <div id="popup-integrated-progress-text" style="margin-bottom: 6px;">Calculating integrated aberration...</div>
+        <progress id="popup-integrated-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
+    </div>
     <div class="content">
         <div id="popup-integrated-aberration-container"></div>
     </div>
@@ -2722,14 +2861,37 @@ export function setupOpticalSystemChangeListeners(scene) {
             if (containerEl) containerEl.innerHTML = '';
             resizePlot();
 
+            const progressWrapper = document.getElementById('popup-integrated-progress-wrapper');
+            const progressBarEl = document.getElementById('popup-integrated-progressbar');
+            const progressTextEl = document.getElementById('popup-integrated-progress-text');
+
+            const setProgress = (value, text) => {
+                try {
+                    if (progressWrapper) progressWrapper.style.display = 'block';
+                    if (progressBarEl && Number.isFinite(value)) progressBarEl.value = Math.max(0, Math.min(100, value));
+                    if (progressTextEl && typeof text === 'string') progressTextEl.textContent = text;
+                } catch (_) {}
+            };
+
             try {
                 if (!window.opener || typeof window.opener.showIntegratedAberrationDiagram !== 'function') {
                     throw new Error('showIntegratedAberrationDiagram is not available on opener');
                 }
-                await window.opener.showIntegratedAberrationDiagram({ containerElement: containerEl });
+                setProgress(0, 'Starting...');
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt?.percent);
+                        const msg = evt?.message || evt?.phase || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
+                await window.opener.showIntegratedAberrationDiagram({ containerElement: containerEl, onProgress });
+                setProgress(100, 'Done');
                 resizePlot();
             } catch (err) {
                 console.error(err);
+                setProgress(100, 'Failed');
                 if (containerEl) {
                     containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate integrated aberration diagram. Check console.</div>';
                 }
@@ -2858,7 +3020,7 @@ export function setupOpticalSystemChangeListeners(scene) {
     </div>
     <div id="popup-opd-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
         <div id="popup-opd-progress-text" style="margin-bottom: 6px;">Calculating OPD...</div>
-        <progress id="popup-opd-progressbar" style="width: 100%;" max="100"></progress>
+        <progress id="popup-opd-progressbar" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
     </div>
     <div class="content">
         <div id="popup-wavefront-container"></div>
@@ -3173,7 +3335,7 @@ export function setupOpticalSystemChangeListeners(scene) {
     </div>
     <div id="popup-psf-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
         <div id="popup-psf-progress-text" style="margin-bottom: 6px;">Calculating PSF...</div>
-        <progress id="popup-psf-progress" style="width: 100%;" max="100"></progress>
+        <progress id="popup-psf-progress" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
     </div>
     <div class="content">
         <div id="popup-psf-container"></div>
@@ -3501,7 +3663,7 @@ export function setupOpticalSystemChangeListeners(scene) {
     </div>
     <div id="popup-mtf-progress-wrapper" style="display:none; padding: 8px 12px; font-size: 12px; color: #333; border-bottom: 1px solid #eee; background: #fff;">
         <div id="popup-mtf-progress-text" style="margin-bottom: 6px;">Calculating MTF...</div>
-        <progress id="popup-mtf-progress" style="width: 100%;" max="100"></progress>
+        <progress id="popup-mtf-progress" style="display:block;width:calc(100% + 24px);margin-left:-12px;" max="100"></progress>
     </div>
     <div class="content">
         <div id="popup-mtf-container"></div>
@@ -3757,6 +3919,10 @@ export function setupOpticalSystemChangeListeners(scene) {
         <span class="note-inline" style="font-size:12px;color:#666;">(Always normalized by stop diameter)</span>
         <button id="popup-show-transverse-aberration-btn" type="button">Show transverse aberration diagram</button>
     </div>
+    <div id="popup-transverse-progress-wrapper" style="display:none;padding:10px 12px;border-bottom:1px solid #eee;background:#fff;">
+        <div id="popup-transverse-progress-text" style="margin-bottom: 6px; font-size:12px; color:#555;">Starting...</div>
+        <progress id="popup-transverse-progressbar" value="0" max="100" style="display:block;width:calc(100% + 24px);margin-left:-12px;height:14px;"></progress>
+    </div>
     <div class="note">
         Note: X-axis is transverse aberration (μm), Y-axis is normalized pupil coordinate.
     </div>
@@ -3782,6 +3948,22 @@ export function setupOpticalSystemChangeListeners(scene) {
         }
 
         window.renderTransverseAberration = async () => {
+            const progressWrap = document.getElementById('popup-transverse-progress-wrapper');
+            const progressBar = document.getElementById('popup-transverse-progressbar');
+            const progressText = document.getElementById('popup-transverse-progress-text');
+            const setProgress = (percent, message) => {
+                try {
+                    if (progressWrap) progressWrap.style.display = 'block';
+                    if (progressBar && Number.isFinite(percent)) progressBar.value = Math.max(0, Math.min(100, percent));
+                    if (progressText) progressText.textContent = message || '';
+                } catch (_) {}
+            };
+            const onProgress = (evt) => {
+                const p = Number(evt?.percent);
+                const msg = (evt && (evt.message || evt.phase)) ? String(evt.message || evt.phase) : '';
+                setProgress(Number.isFinite(p) ? p : 0, msg);
+            };
+
             const popupRay = document.getElementById('popup-transverse-ray-count-input');
             const rayCount = popupRay ? parseInt(popupRay.value, 10) : 51;
             const openerRay = getOpenerEl('transverse-ray-count-input');
@@ -3796,15 +3978,19 @@ export function setupOpticalSystemChangeListeners(scene) {
                 if (!window.opener || typeof window.opener.showTransverseAberrationDiagram !== 'function') {
                     throw new Error('showTransverseAberrationDiagram is not available on opener');
                 }
+                setProgress(0, 'Starting...');
                 await window.opener.showTransverseAberrationDiagram({
                     rayCount: Number.isFinite(rayCount) ? rayCount : 51,
-                    containerElement: containerEl
+                    containerElement: containerEl,
+                    onProgress
                 });
+                setProgress(100, 'Done');
             } catch (err) {
                 console.error(err);
                 if (containerEl) {
                     containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate transverse aberration diagram. Check console.</div>';
                 }
+                setProgress(100, 'Failed');
             }
         };
 
