@@ -1397,10 +1397,116 @@ function setupClearStorageButton() {
     const clearStorageBtn = document.getElementById('clear-storage-btn');
     if (clearStorageBtn) {
         clearStorageBtn.addEventListener('click', async function() {
-            const confirmed = confirm(
-                'ブラウザのキャッシュデータを削除してもよろしいですか? この操作は元に戻せません。\n\n' +
-                'Do you want to clear the browser cache data? This action cannot be undone.'
-            );
+            // NOTE: Browser-native confirm/alert localize button labels (e.g. キャンセル/閉じる).
+            // For Clear Cache UX, use a minimal custom modal so buttons are always English.
+            const __clearCacheModal = ({ message, buttons, defaultValue = null }) => {
+                return new Promise((resolve) => {
+                    const cleanup = (value) => {
+                        try { document.removeEventListener('keydown', onKeyDown, true); } catch (_) {}
+                        try { overlay.remove(); } catch (_) {}
+                        resolve(value);
+                    };
+
+                    const overlay = document.createElement('div');
+                    overlay.setAttribute('role', 'dialog');
+                    overlay.setAttribute('aria-modal', 'true');
+                    overlay.style.cssText = [
+                        'position: fixed',
+                        'inset: 0',
+                        'background: rgba(0, 0, 0, 0.35)',
+                        'display: flex',
+                        'align-items: center',
+                        'justify-content: center',
+                        'z-index: 2147483647'
+                    ].join(';');
+
+                    const box = document.createElement('div');
+                    box.style.cssText = [
+                        'background: #fff',
+                        'color: #111',
+                        'max-width: min(560px, calc(100vw - 32px))',
+                        'border-radius: 10px',
+                        'padding: 16px 16px 12px 16px',
+                        'box-shadow: 0 12px 32px rgba(0,0,0,0.25)'
+                    ].join(';');
+
+                    const body = document.createElement('div');
+                    body.style.cssText = [
+                        'white-space: pre-wrap',
+                        'line-height: 1.4',
+                        'font-size: 14px'
+                    ].join(';');
+                    body.textContent = String(message ?? '');
+
+                    const footer = document.createElement('div');
+                    footer.style.cssText = [
+                        'display: flex',
+                        'gap: 8px',
+                        'justify-content: flex-end',
+                        'margin-top: 12px'
+                    ].join(';');
+
+                    const makeBtn = (b) => {
+                        const btn = document.createElement('button');
+                        btn.type = 'button';
+                        btn.textContent = String(b?.label ?? 'OK');
+                        btn.style.cssText = [
+                            'padding: 6px 14px',
+                            'border-radius: 8px',
+                            'border: 1px solid #ccc',
+                            'background: #f7f7f7',
+                            'cursor: pointer'
+                        ].join(';');
+                        if (b?.primary) {
+                            btn.style.border = '1px solid #0b57d0';
+                            btn.style.background = '#0b57d0';
+                            btn.style.color = '#fff';
+                        }
+                        btn.addEventListener('click', () => cleanup(b?.value));
+                        return btn;
+                    };
+
+                    const onKeyDown = (ev) => {
+                        if (ev.key === 'Escape') {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            cleanup(defaultValue);
+                        }
+                    };
+                    document.addEventListener('keydown', onKeyDown, true);
+
+                    overlay.addEventListener('click', (ev) => {
+                        if (ev.target === overlay) cleanup(defaultValue);
+                    });
+
+                    for (const b of (Array.isArray(buttons) ? buttons : [])) {
+                        footer.appendChild(makeBtn(b));
+                    }
+
+                    box.appendChild(body);
+                    box.appendChild(footer);
+                    overlay.appendChild(box);
+                    document.body.appendChild(overlay);
+
+                    // Focus primary button if present, else first.
+                    try {
+                        const btns = footer.querySelectorAll('button');
+                        const primary = footer.querySelector('button[style*="background: rgb(11, 87, 208)"]');
+                        (primary || btns[btns.length - 1] || btns[0])?.focus?.();
+                    } catch (_) {}
+                });
+            };
+
+            const confirmed = await __clearCacheModal({
+                message:
+                    'ブラウザのキャッシュデータを削除してもよろしいですか? この操作は元に戻せません。\n\n' +
+                    'Do you want to clear the browser cache data? This action cannot be undone.',
+                buttons: [
+                    { label: 'Cancel', value: false },
+                    { label: 'OK', value: true, primary: true }
+                ],
+                defaultValue: false
+            });
             if (confirmed) {
                 try {
                     // IMPORTANT: Clear Cache ends with location.reload().
@@ -1576,10 +1682,13 @@ function setupClearStorageButton() {
                         console.warn('⚠️ [ClearStorage] Failed to load default JSON after clear:', e);
                     }
                     
-                    alert(
-                        'ローカルキャッシュがクリアされました。デフォルト設計を読み込み、ページをリロードします。\n\n' +
-                        'Local cache has been cleared. Loading the default design and reloading the page.'
-                    );
+                    await __clearCacheModal({
+                        message:
+                            'ローカルキャッシュがクリアされました。デフォルト設計を読み込み、ページをリロードします。\n\n' +
+                            'Local cache has been cleared. Loading the default design and reloading the page.',
+                        buttons: [{ label: 'Close', value: true, primary: true }],
+                        defaultValue: true
+                    });
                     console.log('✅ ローカルキャッシュがクリアされました');
                     location.reload();
                 } catch (error) {

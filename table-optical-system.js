@@ -1256,130 +1256,10 @@ tableOpticalSystem.on("cellEdited", function(cell){
             isUpdatingFromCellEdit = false;
             return;
           }
-          
-          // 光学系データとObjectデータを取得
-          const opticalSystemRows = allData;
-          const objectRows = window.tableObject ? window.tableObject.getData() : [];
-          
-          if (!objectRows || objectRows.length === 0) {
-            alert('Objectが設定されていません。');
-            cell.setValue('');
-            isUpdatingFromCellEdit = false;
-            return;
-          }
-          
-          // Objectの位置を取得
-          const allObjectPositions = objectRows.map(obj => ({
-            x: parseFloat(obj.xHeightAngle) || 0,
-            y: parseFloat(obj.yHeightAngle) || 0,
-            z: 0
-          }));
-          
-          // 主光線のみを生成（光線数=1）
-          const objectSurface = opticalSystemRows[0];
-          const objectThickness = objectSurface?.thickness;
-          const isInfiniteSystem = objectThickness === 'INF' || objectThickness === 'Infinity' || objectThickness === Infinity;
-          
-          let crossBeamResult;
-          if (isInfiniteSystem) {
-            const objectAngles = allObjectPositions.map(pos => ({ x: pos.x || 0, y: pos.y || 0 }));
-            crossBeamResult = await window.generateInfiniteSystemCrossBeam(opticalSystemRows, objectAngles, {
-              rayCount: 1,
-              debugMode: false,
-              wavelength: 0.5876,
-              crossType: 'both',
-              angleUnit: 'deg',
-              chiefZ: -20,
-              targetSurfaceIndex: imageSurfaceIndex
-            });
-          } else {
-            crossBeamResult = await window.generateCrossBeam(opticalSystemRows, allObjectPositions, {
-              rayCount: 1,
-              debugMode: false,
-              wavelength: 0.5876,
-              crossType: 'both'
-            });
-          }
-          
-          // 主光線のImage面での最大高さを計算
-          let rays = [];
-          if (crossBeamResult) {
-            if (crossBeamResult.rays && crossBeamResult.rays.length > 0) {
-              rays = crossBeamResult.rays;
-            } else if (crossBeamResult.objectResults && crossBeamResult.objectResults.length > 0) {
-              // 無限系: tracedRaysから主光線を抽出
-              crossBeamResult.objectResults.forEach(obj => {
-                if (obj.tracedRays && obj.tracedRays.length > 0) {
-                  const chiefRay = obj.tracedRays.find(ray => 
-                    ray.originalRay && (ray.originalRay.type === 'chief' || ray.originalRay.role === 'chief')
-                  );
-                  if (chiefRay && chiefRay.rayPath) {
-                    rays.push(chiefRay);
-                  }
-                }
-              });
-            }
-          }
-          
-          if (rays.length > 0) {
-            let maxHeight = 0;
-            
-            console.log(`🔍 取得した光線数: ${rays.length}`);
-            
-            rays.forEach((ray, rayIndex) => {
-              if (ray.rayPath && ray.rayPath.length > imageSurfaceIndex) {
-                const imagePoint = ray.rayPath[imageSurfaceIndex];
-                console.log(`  Ray ${rayIndex}: Image面での位置 x=${imagePoint?.x}, y=${imagePoint?.y}`);
-                if (imagePoint && isFinite(imagePoint.x) && isFinite(imagePoint.y)) {
-                  // X, Y両方を考慮した高さを計算（二次元の距離）
-                  const height = Math.sqrt(imagePoint.x * imagePoint.x + imagePoint.y * imagePoint.y);
-                  console.log(`    → 高さ=${height.toFixed(6)} mm`);
-                  if (height > maxHeight) {
-                    maxHeight = height;
-                    console.log(`    ✅ 最大高さ更新: ${maxHeight.toFixed(6)} mm`);
-                  }
-                }
-              }
-            });
-            
-            console.log(`🎯 最終的な最大高さ: ${maxHeight.toFixed(6)} mm`);
-            
-            if (maxHeight > 0) {
-              console.log(`✅ Semi Diaを${maxHeight.toFixed(6)}に設定`);
-              console.log(`🔍 更新前のrowData:`, rowData);
-              console.log(`🔍 更新するID: ${rowData.id}, Semi Dia値: ${maxHeight}`);
-              
-              // isUpdatingFromCellEditフラグをオフにして更新
-              isUpdatingFromCellEdit = false;
-              
-              // 更新前の全データを確認
-              const beforeData = tableOpticalSystem.getData();
-              console.log(`🔍 更新前のImage面データ:`, beforeData[imageSurfaceIndex]);
-              
-              // tableOpticalSystem.updateRowを使って確実に更新（optimizeSemiDiaは"A"のまま残す）
-              tableOpticalSystem.updateRow(rowData.id, {
-                semidia: maxHeight
-              });
-              
-              // 更新後の全データを確認
-              const afterData = tableOpticalSystem.getData();
-              console.log(`🔍 更新後のImage面データ:`, afterData[imageSurfaceIndex]);
-              
-              // Abbe数が変更されたか確認
-              if (beforeData[imageSurfaceIndex].abbe !== afterData[imageSurfaceIndex].abbe) {
-                console.error(`❌ Abbe数が変更されました！ ${beforeData[imageSurfaceIndex].abbe} → ${afterData[imageSurfaceIndex].abbe}`);
-              }
-              
-              // テーブルを保存
-              if (typeof saveTableData === 'function') {
-                saveTableData(tableOpticalSystem.getData());
-              }
-            } else {
-              alert('主光線の高さを計算できませんでした。');
-            }
-          } else {
-            alert('主光線追跡に失敗しました。');
-          }
+
+          // Delegate to the unified implementation so this code path stays
+          // consistent with other triggers (Blocks-only mode, INF normalization, etc.).
+          await calculateImageSemiDiaFromChiefRays();
 
         } catch (error) {
           console.error('❌ Semi Dia 自動計算エラー:', error);
@@ -1968,16 +1848,21 @@ async function calculateImageSemiDiaFromChiefRays() {
     console.log('🎯 Image面のSemi Dia自動計算を開始');
     
     try {
-        // Image面を見つける
-        const allData = tableOpticalSystem.getData();
-        const imageSurfaceIndex = allData.findIndex(data => 
-            data["object type"] === "Image" || data.object === "Image"
-        );
+    // Blocks-first / Blocks-only を含め、常に「評価系と同じ rows」を使う。
+    // Expanded table は Blocks-only だと no-op / stale になり得るため。
+    const opticalSystemRows = (typeof window !== 'undefined' && typeof window.getOpticalSystemRows === 'function')
+      ? window.getOpticalSystemRows(tableOpticalSystem)
+      : tableOpticalSystem.getData();
+
+    // Image面を見つける
+    const imageSurfaceIndex = opticalSystemRows.findIndex(data =>
+      data["object type"] === "Image" || data.object === "Image"
+    );
         if (imageSurfaceIndex === -1) {
             console.warn('⚠️ Image面が見つかりません');
             return false;
         }
-        const imageSurface = allData[imageSurfaceIndex];
+    const imageSurface = opticalSystemRows[imageSurfaceIndex];
         // optimizeSemiDia gate:
         // In Blocks-first / Blocks-only mode, the canonical state lives in Design Intent blocks.
         // The expanded table row may not have synced optimizeSemiDia yet, so check blocks too.
@@ -2013,8 +1898,9 @@ async function calculateImageSemiDiaFromChiefRays() {
           return false;
         }
         // 光学系データとObjectデータを取得
-        const opticalSystemRows = allData;
-        const objectRows = window.tableObject ? window.tableObject.getData() : [];
+        const objectRows = (typeof window !== 'undefined' && typeof window.getObjectRows === 'function')
+          ? window.getObjectRows(window.tableObject)
+          : (window.tableObject ? window.tableObject.getData() : []);
         if (!objectRows || objectRows.length === 0) {
             console.warn('⚠️ Objectが設定されていません');
             return false;
