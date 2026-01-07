@@ -1397,7 +1397,10 @@ function setupClearStorageButton() {
     const clearStorageBtn = document.getElementById('clear-storage-btn');
     if (clearStorageBtn) {
         clearStorageBtn.addEventListener('click', async function() {
-            const confirmed = confirm('すべての保存データを削除してもよろしいですか？この操作は元に戻せません。');
+            const confirmed = confirm(
+                'ブラウザのキャッシュデータを削除してもよろしいですか? この操作は元に戻せません。\n\n' +
+                'Do you want to clear the browser cache data? This action cannot be undone.'
+            );
             if (confirmed) {
                 try {
                     localStorage.removeItem('sourceTableData');
@@ -1565,8 +1568,11 @@ function setupClearStorageButton() {
                         console.warn('⚠️ [ClearStorage] Failed to load default JSON after clear:', e);
                     }
                     
-                    alert('ローカルストレージがクリアされました。デフォルト設計を読み込み、ページをリロードします。');
-                    console.log('✅ ローカルストレージがクリアされました');
+                    alert(
+                        'ローカルキャッシュがクリアされました。デフォルト設計を読み込み、ページをリロードします。\n\n' +
+                        'Local cache has been cleared. Loading the default design and reloading the page.'
+                    );
+                    console.log('✅ ローカルキャッシュがクリアされました');
                     location.reload();
                 } catch (error) {
                     console.error('❌ ローカルストレージクリアエラー:', error);
@@ -1925,7 +1931,7 @@ function updateWavefrontObjectOptions() {
         
         // ローカルストレージのデータが多すぎる場合の警告
         if (objectData.length > 6) {
-            console.warn('⚠️ Objectデータが多すぎます。Clear Storageボタンでリセットしてください。');
+            console.warn('⚠️ Objectデータが多すぎます。Clear Cacheボタンでリセットしてください。');
         }
         
         // 既存のオプションをクリア

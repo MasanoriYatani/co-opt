@@ -40,7 +40,7 @@ export function updateWavefrontObjectSelect() {
             
             // データ数の警告
             if (allObjectRows.length > objectRows.length) {
-                console.warn(`無効なObjectデータが${allObjectRows.length - objectRows.length}個あります。Clear Storageでリセットを推奨。`);
+                console.warn(`無効なObjectデータが${allObjectRows.length - objectRows.length}個あります。Clear Cacheでリセットを推奨。`);
             }
         } else {
             console.warn('⚠️ tableObjectが利用できません');
