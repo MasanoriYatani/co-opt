@@ -1403,6 +1403,12 @@ function setupClearStorageButton() {
             );
             if (confirmed) {
                 try {
+                    // IMPORTANT: Clear Cache ends with location.reload().
+                    // The Configuration module installs a beforeunload autosave which would otherwise
+                    // overwrite the freshly-written default configurations with the *current* table data.
+                    // Disable autosave for the remainder of this flow to avoid cross-config corruption.
+                    try { globalThis.__configurationAutoSaveDisabled = true; } catch (_) {}
+
                     localStorage.removeItem('sourceTableData');
                     localStorage.removeItem('objectTableData');
                     localStorage.removeItem('OpticalSystemTableData');
@@ -1538,11 +1544,13 @@ function setupClearStorageButton() {
                             // Persist table data (match Load behavior as closely as possible).
                             const activeId = candidateConfig?.activeConfigId || 1;
                             const activeCfg = cfgList.find(c => c.id === activeId) || cfgList[0] || null;
-                            const effectiveSource = allData.source ?? activeCfg?.source ?? [];
-                            const effectiveObject = allData.object ?? activeCfg?.object ?? [];
+                            // Prefer per-config tables for the active config. Some JSONs may also include
+                            // top-level `source/object/opticalSystem`, which can belong to a different config.
+                            const effectiveSource = (activeCfg && Array.isArray(activeCfg.source)) ? activeCfg.source : (allData.source ?? []);
+                            const effectiveObject = (activeCfg && Array.isArray(activeCfg.object)) ? activeCfg.object : (allData.object ?? []);
                             const effectiveOpticalSystem = (activeCfg && configurationHasBlocks(activeCfg) && Array.isArray(activeCfg.opticalSystem))
                                 ? activeCfg.opticalSystem
-                                : (allData.opticalSystem ?? activeCfg?.opticalSystem ?? []);
+                                : ((activeCfg && Array.isArray(activeCfg.opticalSystem)) ? activeCfg.opticalSystem : (allData.opticalSystem ?? []));
                             const effectiveMeritFunction = allData.meritFunction ?? candidateConfig?.meritFunction ?? [];
                             const effectiveSystemRequirements = allData.systemRequirements ?? candidateConfig?.systemRequirements ?? [];
                             const effectiveSystemData = allData.systemData ?? activeCfg?.systemData ?? null;
@@ -1576,6 +1584,7 @@ function setupClearStorageButton() {
                     location.reload();
                 } catch (error) {
                     console.error('❌ ローカルストレージクリアエラー:', error);
+                    try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
                     alert('ローカルストレージのクリアに失敗しました。');
                 }
             }
