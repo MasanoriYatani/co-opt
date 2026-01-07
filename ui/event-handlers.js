@@ -1766,8 +1766,8 @@ export function setupOpticalSystemChangeListeners(scene) {
                 surfaceColorsToggle.textContent = isCollapsed ? '▶' : '◀';
             }
 
-            // Default: expanded
-            window.__surfaceColorsCollapsed = false;
+            // Default: collapsed
+            window.__surfaceColorsCollapsed = true;
             applySurfaceColorsCollapsedState(window.__surfaceColorsCollapsed);
 
             if (surfaceColorsToggle) {

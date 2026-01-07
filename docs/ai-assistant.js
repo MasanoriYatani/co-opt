@@ -1648,6 +1648,22 @@ function buildGeminiTools() {
                     },
                     required: ['surf', 'key', 'value']
                 }
+            },
+            {
+                name: 'set_surface_color',
+                description: 'Render Optical System の Surface Colors（面ごとの色）を更新します。localStorage の coopt.surfaceColorOverrides を更新し、3D描画を再描画します。',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        all: { type: 'boolean', description: 'true の場合、全Surface対象（色=Default/None で全解除）' },
+                        surf: { type: 'integer', description: '0-based surface index（Surface Colors の # と同じ）' },
+                        surfaceId: { type: 'integer', description: 'surface row の id（存在する場合）。指定すると id:NN で更新します。' },
+                        blockId: { type: 'string', description: 'provenance 用 blockId（_blockId）。surfaceRole と組で指定すると p:blockId|surfaceRole を更新します。' },
+                        surfaceRole: { type: 'string', description: 'provenance 用 surfaceRole（_surfaceRole）。blockId と組で指定します。' },
+                        color: { type: 'string', description: '色。#RRGGBB / 0xRRGGBB / "Light Pink" 等。"Default"/"None" で解除。' }
+                    },
+                    required: ['color']
+                }
             }
         ]
     }];
@@ -1860,6 +1876,32 @@ function buildOpenAITools() {
                     required: ['surf', 'key', 'value']
                 }
             }
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'set_surface_color',
+                description: 'Render Optical System の Surface Colors（面ごとの色）を更新します。localStorage の coopt.surfaceColorOverrides を更新し、3D描画を再描画します。',
+                parameters: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        all: { type: 'boolean', description: 'true の場合、全Surface対象（色=Default/None で全解除）' },
+                        surf: { type: 'integer', description: '0-based surface index（Surface Colors の # と同じ）' },
+                        surfaceId: { type: 'integer', description: 'surface row の id（存在する場合）。指定すると id:NN で更新します。' },
+                        blockId: { type: 'string', description: 'provenance 用 blockId（_blockId）。surfaceRole と組で指定すると p:blockId|surfaceRole を更新します。' },
+                        surfaceRole: { type: 'string', description: 'provenance 用 surfaceRole（_surfaceRole）。blockId と組で指定します。' },
+                        color: { type: 'string', description: '色。#RRGGBB / 0xRRGGBB / "Light Pink" 等。"Default"/"None" で解除。' }
+                    },
+                    required: ['color'],
+                    anyOf: [
+                        { required: ['all'] },
+                        { required: ['surf'] },
+                        { required: ['surfaceId'] },
+                        { required: ['blockId', 'surfaceRole'] }
+                    ]
+                }
+            }
         }
     ];
 }
@@ -2049,6 +2091,165 @@ function getAllowedKeysForBlockType(blockType) {
 }
 
 const ALLOWED_SURFACE_KEYS = new Set(['radius', 'radiusRaw', 'thickness', 'material', 'glass', 'semidia', 'conic', 'type']);
+
+const SURFACE_COLOR_OVERRIDES_STORAGE_KEY = 'coopt.surfaceColorOverrides';
+const SURFACE_COLOR_PALETTE_BY_NAME = new Map([
+    ['light pink', '#F8BBD0'],
+    ['light red', '#FFCDD2'],
+    ['light orange', '#FFE0B2'],
+    ['light amber', '#FFECB3'],
+    ['light yellow', '#FFF9C4'],
+    ['light lime', '#F0F4C3'],
+    ['light green', '#C8E6C9'],
+    ['light mint', '#B2DFDB'],
+    ['light cyan', '#B3E5FC'],
+    ['light sky', '#BBDEFB'],
+    ['light blue', '#90CAF9'],
+    ['light indigo', '#C5CAE9'],
+    ['light purple', '#E1BEE7'],
+    ['light lavender', '#D1C4E9'],
+    ['light peach', '#FFCCBC'],
+    ['light gray', '#ECEFF1']
+]);
+
+function loadSurfaceColorOverrides() {
+    try {
+        const raw = localStorage.getItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return isPlainObject(parsed) ? parsed : {};
+    } catch (_) {
+        return {};
+    }
+}
+
+function saveSurfaceColorOverrides(map) {
+    try {
+        localStorage.setItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY, JSON.stringify(map || {}));
+    } catch (_) {}
+}
+
+function normalizeSurfaceColorInput(color) {
+    const s0 = String(color ?? '').trim();
+    if (!s0) return null;
+    const lower = s0.toLowerCase();
+    if (lower === 'default' || lower === 'none' || lower === 'clear' || lower === 'reset' || lower === 'auto') return null;
+
+    if (/^#[0-9a-fA-F]{6}$/.test(s0)) return s0.toUpperCase();
+    if (/^0x[0-9a-fA-F]{6}$/.test(s0)) return ('#' + s0.slice(2)).toUpperCase();
+
+    const named = SURFACE_COLOR_PALETTE_BY_NAME.get(lower);
+    if (named) return named;
+
+    const squashed = lower.replace(/\s+/g, ' ').trim();
+    const named2 = SURFACE_COLOR_PALETTE_BY_NAME.get(squashed);
+    if (named2) return named2;
+
+    throw new Error(`Unsupported color: ${s0}`);
+}
+
+function surfaceColorKeyFromRowOrArgs({ row, surf, surfaceId, blockId, surfaceRole }) {
+    try {
+        const bid = String(row?._blockId ?? blockId ?? '').trim();
+        const role = String(row?._surfaceRole ?? surfaceRole ?? '').trim();
+        if (bid && role) return 'p:' + bid + '|' + role;
+    } catch (_) {}
+
+    try {
+        const sid = Number(row?.id ?? surfaceId);
+        if (Number.isFinite(sid)) return 'id:' + String(Math.floor(sid));
+    } catch (_) {}
+
+    const idx = Number.isInteger(Number(surf)) ? Number(surf) : 0;
+    return 'i:' + String(Math.floor(idx));
+}
+
+function request3DRedrawBestEffort() {
+    const tryPost = (win) => {
+        try {
+            if (!win || win.closed) return false;
+            win.postMessage({ action: 'request-redraw' }, '*');
+            return true;
+        } catch (_) {
+            return false;
+        }
+    };
+
+    if (tryPost(window.popup3DWindow)) return;
+
+    try {
+        if (window.opener && !window.opener.closed) {
+            if (tryPost(window.opener.popup3DWindow)) return;
+        }
+    } catch (_) {}
+}
+
+async function tool_set_surface_color(args) {
+    const systemConfig = loadSystemConfigurations();
+    const cfg = getActiveConfig(systemConfig);
+    if (!systemConfig || !cfg) throw new Error('systemConfigurations / active configuration not found');
+
+    const colorHex = normalizeSurfaceColorInput(args?.color);
+
+    const isAll = Boolean(args?.all);
+    if (isAll) {
+        if (colorHex !== null) {
+            throw new Error('all=true is currently only supported with color=Default/None (reset)');
+        }
+        localStorage.removeItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY);
+        request3DRedrawBestEffort();
+        return { ok: true, applied: { key: '(all)', color: 'Default' } };
+    }
+
+    const hasSurf = Number.isInteger(Number(args?.surf)) && Number(args?.surf) >= 0;
+    const hasSurfaceId = Number.isFinite(Number(args?.surfaceId));
+    const hasProv = String(args?.blockId ?? '').trim() && String(args?.surfaceRole ?? '').trim();
+    if (!hasSurf && !hasSurfaceId && !hasProv) {
+        throw new Error('surf or surfaceId or (blockId+surfaceRole) is required');
+    }
+
+    const surf = hasSurf ? Number(args.surf) : null;
+
+    let row = null;
+    try {
+        if (hasSurf) {
+            if (Array.isArray(cfg?.blocks) && cfg.blocks.length > 0) {
+                const exp = expandBlocksToOpticalSystemRows(cfg.blocks);
+                row = exp?.rows?.[surf] ?? null;
+            } else if (Array.isArray(cfg?.opticalSystem)) {
+                row = cfg.opticalSystem?.[surf] ?? null;
+            }
+        } else if (hasSurfaceId) {
+            const sid = Math.floor(Number(args.surfaceId));
+            const rows = (Array.isArray(cfg?.blocks) && cfg.blocks.length > 0)
+                ? (expandBlocksToOpticalSystemRows(cfg.blocks)?.rows || [])
+                : (Array.isArray(cfg?.opticalSystem) ? cfg.opticalSystem : []);
+            row = Array.isArray(rows) ? (rows.find(r => Number(r?.id) === sid) || null) : null;
+        }
+    } catch (_) {
+        row = null;
+    }
+
+    const key = surfaceColorKeyFromRowOrArgs({
+        row,
+        surf: hasSurf ? surf : 0,
+        surfaceId: hasSurfaceId ? Number(args.surfaceId) : null,
+        blockId: args?.blockId,
+        surfaceRole: args?.surfaceRole
+    });
+
+    const map = loadSurfaceColorOverrides();
+    if (colorHex === null) {
+        delete map[key];
+    } else {
+        map[key] = colorHex;
+    }
+    saveSurfaceColorOverrides(map);
+
+    request3DRedrawBestEffort();
+
+    return { ok: true, applied: { key, color: colorHex ?? 'Default' } };
+}
 
 async function tool_set_block_param(args) {
     const systemConfig = loadSystemConfigurations();
@@ -2389,6 +2590,10 @@ async function applyActionPlan(actions) {
             const r = await tool_set_surface_field(a);
             appliedCount++;
             logs.push(`set_surface_field surf=${r.applied.surf} ${r.applied.key}=${JSON.stringify(r.applied.value)}`);
+        } else if (type === 'set_surface_color') {
+            const r = await tool_set_surface_color(a);
+            appliedCount++;
+            logs.push(`set_surface_color ${r.applied.key}=${JSON.stringify(r.applied.color)}`);
         } else {
             logs.push(`skip unknown action type: ${type || '(missing)'}`);
         }
@@ -2572,6 +2777,10 @@ async function runOpenAIConversationWithTools({ messages, apiKey, model, thinkin
                     result = await tool_set_block_param(args);
                 } else if (name === 'set_surface_field') {
                     result = await tool_set_surface_field(args);
+                } else if (c.name === 'set_surface_color') {
+                    result = await tool_set_surface_color(c.args);
+                } else if (name === 'set_surface_color') {
+                    result = await tool_set_surface_color(args);
                 } else {
                     result = { ok: false, error: `Unknown tool: ${name}` };
                 }
