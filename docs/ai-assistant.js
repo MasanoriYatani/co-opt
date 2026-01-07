@@ -2139,14 +2139,32 @@ async function tool_set_block_param(args) {
             v = n;
         }
 
-        if (sectionEffective === 'parameters') {
+        const updateParameters = () => {
             if (!isPlainObject(b.parameters)) b.parameters = {};
             b.parameters[k] = v;
-        } else {
+        };
+        const updateVariables = () => {
             if (!isPlainObject(b.variables)) b.variables = {};
             const existing = b.variables[k];
             if (isPlainObject(existing)) existing.value = v;
             else b.variables[k] = { value: v };
+        };
+
+        // IMPORTANT:
+        // Expansion prefers parameters over variables (getParamOrVarValue).
+        // If a key already exists in parameters, writing only to variables would appear to "apply"
+        // but have no visible effect. Therefore, update the authoritative location:
+        // - If key exists in parameters: update parameters.
+        // - If key exists in variables: update variables.
+        // - If key exists in both: update both (avoid drift).
+        // - If key exists in neither: honor requested section.
+        const hasParamKey = isPlainObject(b.parameters) && Object.prototype.hasOwnProperty.call(b.parameters, k);
+        const hasVarKey = isPlainObject(b.variables) && Object.prototype.hasOwnProperty.call(b.variables, k);
+        if (hasParamKey) updateParameters();
+        if (hasVarKey) updateVariables();
+        if (!hasParamKey && !hasVarKey) {
+            if (sectionEffective === 'parameters') updateParameters();
+            else updateVariables();
         }
 
         // Keep legacy stop variables in sync (best-effort), even though expand uses parameters.
@@ -2173,7 +2191,8 @@ async function tool_set_block_param(args) {
             oneCfg.opticalSystem = exp2.rows;
         }
 
-        return { ok: true, configId: oneCfg?.id, applied: { blockId: resolvedBlockId, section: sectionEffective, key: k, value: v } };
+        const appliedSection = (hasParamKey || (!hasParamKey && !hasVarKey && sectionEffective === 'parameters')) ? 'parameters' : 'variables';
+        return { ok: true, configId: oneCfg?.id, applied: { blockId: resolvedBlockId, section: appliedSection, key: k, value: v } };
     };
 
     // Validate required fields
