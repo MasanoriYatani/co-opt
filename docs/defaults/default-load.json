@@ -695,13 +695,13 @@
       "optimizeRI": "",
       "abbe": "58.63",
       "optimizeAbbe": "",
-      "conic": "-0.0023359696991683233",
+      "conic": "0",
       "optimizeConic": "",
       "coef1": "0",
       "optimizeCoef1": "",
-      "coef2": "-3.8705501802562684e-10",
+      "coef2": "0",
       "optimizeCoef2": "",
-      "coef3": "1.117741421604481e-12",
+      "coef3": "0",
       "optimizeCoef3": "",
       "coef4": "0",
       "optimizeCoef4": "",
@@ -1082,10 +1082,10 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 4.196614306870808,
-      "status": "OK",
-      "_violation": 0,
-      "_contribution": 0
+      "current": 12.101296778525661,
+      "status": "NG",
+      "_violation": 7.101296778525661,
+      "_contribution": 7.101296778525661
     },
     {
       "id": 2,
@@ -1102,7 +1102,7 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 3.449214603082956,
+      "current": 4.531227626353086,
       "status": "OK",
       "_violation": 0,
       "_contribution": 0
@@ -1122,10 +1122,10 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 3.371179217749264,
-      "status": "OK",
-      "_violation": 0,
-      "_contribution": 0
+      "current": 8.627843290453864,
+      "status": "NG",
+      "_violation": 3.627843290453864,
+      "_contribution": 3.627843290453864
     },
     {
       "id": 4,
@@ -1142,10 +1142,10 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 7.033133236087598,
-      "status": "NG",
-      "_violation": 2.0331332360875978,
-      "_contribution": 2.0331332360875978
+      "current": 3.310552648172001,
+      "status": "OK",
+      "_violation": 0,
+      "_contribution": 0
     },
     {
       "id": 5,
@@ -1162,7 +1162,7 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 1.0302921925041282,
+      "current": 3.0663307786682052,
       "status": "OK",
       "_violation": 0,
       "_contribution": 0
@@ -1182,7 +1182,7 @@
       "tol": 0,
       "target": "5",
       "weight": 1,
-      "current": 3.199844853238392,
+      "current": 2.4646362060929636,
       "status": "OK",
       "_violation": 0,
       "_contribution": 0
@@ -1892,13 +1892,13 @@
             "optimizeRI": "",
             "abbe": "58.63",
             "optimizeAbbe": "",
-            "conic": "-0.0023359696991683233",
+            "conic": "0",
             "optimizeConic": "",
             "coef1": "0",
             "optimizeCoef1": "",
-            "coef2": "-3.8705501802562684e-10",
+            "coef2": "0",
             "optimizeCoef2": "",
-            "coef3": "1.117741421604481e-12",
+            "coef3": "0",
             "optimizeCoef3": "",
             "coef4": "0",
             "optimizeCoef4": "",
@@ -2338,7 +2338,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:27:58.187Z",
-          "modified": "2026-01-07T13:00:17.534Z",
+          "modified": "2026-01-07T13:28:38.639Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -2700,11 +2700,11 @@
               "backRadius": 797.679,
               "centerThickness": 4.5,
               "material": "N-SK4",
-              "frontSurfType": "Aspheric even",
-              "frontConic": -0.0023359696991683233,
+              "frontSurfType": "Spherical",
+              "frontConic": 0,
               "frontCoef1": 0,
-              "frontCoef2": -3.8705501802562684e-10,
-              "frontCoef3": 1.117741421604481e-12,
+              "frontCoef2": 0,
+              "frontCoef3": 0,
               "frontCoef4": 0,
               "frontCoef5": 0,
               "frontCoef6": 0,
@@ -2727,21 +2727,21 @@
             },
             "variables": {
               "frontConic": {
-                "value": -0.0023359696991683233,
+                "value": 0,
                 "optimize": {
-                  "mode": "V",
+                  "mode": "F",
                   "scope": "global"
                 }
               },
               "frontCoef2": {
-                "value": -3.8705501802562684e-10,
+                "value": 0,
                 "optimize": {
                   "mode": "V",
                   "scope": "global"
                 }
               },
               "frontCoef3": {
-                "value": 1.117741421604481e-12,
+                "value": 0,
                 "optimize": {
                   "mode": "V",
                   "scope": "global"
@@ -3639,13 +3639,13 @@
             "optimizeRI": "",
             "abbe": "58.63",
             "optimizeAbbe": "",
-            "conic": "-0.0023359696991683233",
+            "conic": "0",
             "optimizeConic": "",
             "coef1": "0",
             "optimizeCoef1": "",
-            "coef2": "-3.8705501802562684e-10",
+            "coef2": "0",
             "optimizeCoef2": "",
-            "coef3": "1.117741421604481e-12",
+            "coef3": "0",
             "optimizeCoef3": "",
             "coef4": "0",
             "optimizeCoef4": "",
@@ -4085,7 +4085,7 @@
         ],
         "metadata": {
           "created": "2025-12-15T07:28:51.847Z",
-          "modified": "2026-01-06T14:27:05.765Z",
+          "modified": "2026-01-07T13:27:23.619Z",
           "optimizationTarget": null,
           "locked": false,
           "importAnalyzeMode": false
@@ -4448,10 +4448,10 @@
               "centerThickness": 4.5,
               "material": "N-SK4",
               "frontSurfType": "Aspheric even",
-              "frontConic": -0.0023359696991683233,
+              "frontConic": 0,
               "frontCoef1": 0,
-              "frontCoef2": -3.8705501802562684e-10,
-              "frontCoef3": 1.117741421604481e-12,
+              "frontCoef2": 0,
+              "frontCoef3": 0,
               "frontCoef4": 0,
               "frontCoef5": 0,
               "frontCoef6": 0,
@@ -4474,23 +4474,23 @@
             },
             "variables": {
               "frontCoef2": {
-                "value": -3.8705501802562684e-10,
+                "value": 0,
                 "optimize": {
                   "mode": "V",
                   "scope": "global"
                 }
               },
               "frontCoef3": {
-                "value": 1.117741421604481e-12,
+                "value": 0,
                 "optimize": {
                   "mode": "V",
                   "scope": "global"
                 }
               },
               "frontConic": {
-                "value": -0.0023359696991683233,
+                "value": 0,
                 "optimize": {
-                  "mode": "V",
+                  "mode": "F",
                   "scope": "global"
                 }
               }
@@ -5386,13 +5386,13 @@
             "optimizeRI": "",
             "abbe": "58.63",
             "optimizeAbbe": "",
-            "conic": "-0.0023359696991683233",
+            "conic": "0",
             "optimizeConic": "",
             "coef1": "0",
             "optimizeCoef1": "",
-            "coef2": "-3.8705501802562684e-10",
+            "coef2": "0",
             "optimizeCoef2": "",
-            "coef3": "1.117741421604481e-12",
+            "coef3": "0",
             "optimizeCoef3": "",
             "coef4": "0",
             "optimizeCoef4": "",
@@ -6195,10 +6195,10 @@
               "centerThickness": 4.5,
               "material": "N-SK4",
               "frontSurfType": "Aspheric even",
-              "frontConic": -0.0023359696991683233,
+              "frontConic": 0,
               "frontCoef1": 0,
-              "frontCoef2": -3.8705501802562684e-10,
-              "frontCoef3": 1.117741421604481e-12,
+              "frontCoef2": 0,
+              "frontCoef3": 0,
               "frontCoef4": 0,
               "frontCoef5": 0,
               "frontCoef6": 0,
@@ -6237,7 +6237,7 @@
               "frontConic": {
                 "value": -0.0023359696991683233,
                 "optimize": {
-                  "mode": "V",
+                  "mode": "F",
                   "scope": "global"
                 }
               }
@@ -6454,10 +6454,10 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 4.196614306870808,
-        "status": "OK",
-        "_violation": 0,
-        "_contribution": 0
+        "current": 12.101296778525661,
+        "status": "NG",
+        "_violation": 7.101296778525661,
+        "_contribution": 7.101296778525661
       },
       {
         "id": 2,
@@ -6474,7 +6474,7 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 3.449214603082956,
+        "current": 4.531227626353086,
         "status": "OK",
         "_violation": 0,
         "_contribution": 0
@@ -6494,10 +6494,10 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 3.371179217749264,
-        "status": "OK",
-        "_violation": 0,
-        "_contribution": 0
+        "current": 8.627843290453864,
+        "status": "NG",
+        "_violation": 3.627843290453864,
+        "_contribution": 3.627843290453864
       },
       {
         "id": 4,
@@ -6514,10 +6514,10 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 7.033133236087598,
-        "status": "NG",
-        "_violation": 2.0331332360875978,
-        "_contribution": 2.0331332360875978
+        "current": 3.310552648172001,
+        "status": "OK",
+        "_violation": 0,
+        "_contribution": 0
       },
       {
         "id": 5,
@@ -6534,7 +6534,7 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 1.0302921925041282,
+        "current": 3.0663307786682052,
         "status": "OK",
         "_violation": 0,
         "_contribution": 0
@@ -6554,7 +6554,7 @@
         "tol": 0,
         "target": "5",
         "weight": 1,
-        "current": 3.199844853238392,
+        "current": 2.4646362060929636,
         "status": "OK",
         "_violation": 0,
         "_contribution": 0
