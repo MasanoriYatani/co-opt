@@ -8,6 +8,50 @@ import { drawAsphericProfile, drawPlaneProfile, drawLensSurface, drawLensSurface
          drawLensCrossSection, drawLensCrossSectionWithSurfaceOrigins, 
          drawSemidiaRingWithOriginAndSurface, asphericSurfaceZ, addMirrorBackText } from '../surface.js';
 
+const SURFACE_COLOR_OVERRIDES_STORAGE_KEY = 'coopt.surfaceColorOverrides';
+
+function __coopt_isPlainObject(v) {
+    return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function __coopt_parseColorToInt(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return null;
+    const s = value.trim();
+    if (!s) return null;
+    if (/^0x[0-9a-fA-F]{6}$/.test(s)) return parseInt(s.slice(2), 16);
+    if (/^#[0-9a-fA-F]{6}$/.test(s)) return parseInt(s.slice(1), 16);
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+}
+
+function __coopt_surfaceColorKey(surface, index0) {
+    try {
+        const bid = String(surface?._blockId ?? '').trim();
+        const role = String(surface?._surfaceRole ?? '').trim();
+        if (bid && role) return `p:${bid}|${role}`;
+    } catch (_) {}
+
+    try {
+        const sid = Number(surface?.id);
+        if (Number.isFinite(sid)) return `id:${Math.floor(sid)}`;
+    } catch (_) {}
+
+    return `i:${Math.floor(Number(index0) || 0)}`;
+}
+
+function __coopt_loadSurfaceColorOverrides() {
+    try {
+        if (typeof localStorage === 'undefined') return {};
+        const raw = localStorage.getItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        return __coopt_isPlainObject(parsed) ? parsed : {};
+    } catch (_) {
+        return {};
+    }
+}
+
 /**
  * Draw optical system surfaces
  * @param {Object} options - Drawing options
@@ -57,6 +101,8 @@ export function drawOpticalSystemSurfaces(options = {}) {
     // Surface origins calculation - NOW with the correct parameter
     const surfaceOrigins = calculateSurfaceOrigins(opticalSystemData);
     console.log('🔍 Surface origins calculated:', surfaceOrigins ? surfaceOrigins.length : 'None');
+
+    const surfaceColorOverrides = __coopt_loadSurfaceColorOverrides();
     
     // Debug: Show all surface origins
     if (surfaceOrigins) {
@@ -131,6 +177,10 @@ export function drawOpticalSystemSurfaces(options = {}) {
                 } else if (surface.type === 'Mirror') {
                     // Mirror面の処理
                     console.log(`🪞 Drawing 3D Mirror surface ${i} with origin and rotation`);
+                    const mirrorDefaultColor = 0xc0c0c0;
+                    const mirrorKey = __coopt_surfaceColorKey(surface, i);
+                    const mirrorOverride = __coopt_parseColorToInt(surfaceColorOverrides?.[mirrorKey]);
+                    const mirrorColor = (mirrorOverride !== null) ? mirrorOverride : mirrorDefaultColor;
                     drawLensSurfaceWithOrigin(
                         scene, 
                         surface,                     // params オブジェクト全体
@@ -138,7 +188,7 @@ export function drawOpticalSystemSurfaces(options = {}) {
                         surfaceOrigins[i].rotationMatrix, // rotation matrix
                         "even",                      // mode
                         100,                         // segments
-                        0xc0c0c0,                   // color (シルバー)
+                        mirrorColor,                // color
                         0.8,                        // opacity
                         'Mirror'                     // surfaceType
                     );
@@ -157,6 +207,10 @@ export function drawOpticalSystemSurfaces(options = {}) {
                     
                     // 3D表面を描画
                     console.log(`� Drawing 3D lens surface ${i} with origin and rotation`);
+                    const lensDefaultColor = 0x00ccff;
+                    const lensKey = __coopt_surfaceColorKey(surface, i);
+                    const lensOverride = __coopt_parseColorToInt(surfaceColorOverrides?.[lensKey]);
+                    const lensColor = (lensOverride !== null) ? lensOverride : lensDefaultColor;
                     drawLensSurfaceWithOrigin(
                         scene, 
                         surface,                     // params オブジェクト全体
@@ -164,7 +218,7 @@ export function drawOpticalSystemSurfaces(options = {}) {
                         surfaceOrigins[i].rotationMatrix, // rotation matrix
                         "even",                      // mode
                         100,                         // segments
-                        0x00ccff,                   // color (水色)
+                        lensColor,                  // color
                         0.5,                        // opacity
                         surface.type                 // surfaceType
                     );

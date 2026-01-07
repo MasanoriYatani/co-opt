@@ -155,6 +155,22 @@ const ensurePopupMessageHandler = () => {
                 const opticalSystemRows = getOpticalSystemRows();
                 console.log('📊 Optical system rows:', opticalSystemRows);
 
+                // Provide surface list to popup so it can build per-surface color UI.
+                try {
+                    const surfaces = Array.isArray(opticalSystemRows)
+                        ? opticalSystemRows.map((s, idx) => ({
+                            index0: idx,
+                            id: (s && typeof s === 'object') ? (s.id ?? null) : null,
+                            type: (s && typeof s === 'object') ? (s.type ?? s['object type'] ?? '') : '',
+                            _blockId: (s && typeof s === 'object') ? (s._blockId ?? '') : '',
+                            _surfaceRole: (s && typeof s === 'object') ? (s._surfaceRole ?? '') : ''
+                        }))
+                        : [];
+                    window.popup3DWindow?.postMessage({ action: 'surface-list', surfaces }, '*');
+                } catch (e) {
+                    console.warn('⚠️ Unable to post surface list to popup:', e);
+                }
+
                 if (!opticalSystemRows || opticalSystemRows.length === 0) {
                     console.error('❌ No optical system data');
                     window.popup3DWindow.postMessage({ status: 'Error: No optical system data' }, '*');
@@ -1259,6 +1275,13 @@ export function setupOpticalSystemChangeListeners(scene) {
             font-size: 13px;
         }
 
+        #main {
+            flex: 1 1 auto;
+            min-height: 0;
+            display: flex;
+            width: 100%;
+        }
+
         .ctrl-group {
             display: flex;
             align-items: center;
@@ -1281,6 +1304,94 @@ export function setupOpticalSystemChangeListeners(scene) {
 
         .pattern-btn.active {
             background-color: #e9e9e9;
+        }
+
+        #surface-colors {
+            flex: 0 0 240px;
+            min-height: 0;
+            background: #ffffff;
+            border-left: 1px solid #ddd;
+            padding: 10px 10px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #surface-colors.collapsed {
+            flex: 0 0 32px;
+            padding: 10px 6px;
+        }
+
+        #surface-colors .title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+        }
+
+        #surface-colors .header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        #surface-colors .header-row .title {
+            margin-bottom: 0;
+        }
+
+        #surface-colors-toggle {
+            padding: 4px 6px;
+            font-size: 12px;
+            line-height: 1;
+        }
+
+        #surface-colors.collapsed .table-wrap {
+            display: none;
+        }
+
+        #surface-colors.collapsed .title {
+            display: none;
+        }
+
+        #surface-colors .table-wrap {
+            flex: 1 1 auto;
+            min-height: 0;
+            max-height: none;
+            overflow: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+
+        #surface-colors table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        #surface-colors th,
+        #surface-colors td {
+            padding: 4px 6px;
+            border-bottom: 1px solid #eee;
+            text-align: left;
+            white-space: nowrap;
+        }
+
+        #surface-colors th {
+            position: sticky;
+            top: 0;
+            background: #fafafa;
+            z-index: 1;
+            font-weight: 600;
+        }
+
+        #surface-colors select {
+            font-size: 12px;
+            width: 100%;
+            box-sizing: border-box;
+            height: 22px;
+            line-height: 22px;
+            padding: 0 6px;
         }
     </style>
 </head>
@@ -1305,7 +1416,26 @@ export function setupOpticalSystemChangeListeners(scene) {
 
         <div id="status">Ready</div>
     </div>
-    <div id="threejs-container"></div>
+    <div id="main">
+        <div id="threejs-container"></div>
+        <div id="surface-colors">
+            <div class="header-row">
+                <div class="title">Surface Colors</div>
+                <button id="surface-colors-toggle" type="button" title="Collapse/Expand">◀</button>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Color</th>
+                        </tr>
+                    </thead>
+                    <tbody id="surface-colors-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
     <script src="https://unpkg.com/three@0.138.0/build/three.min.js"></script>
     <script src="https://unpkg.com/three@0.138.0/examples/js/controls/OrbitControls.js"></script>
     <script>
@@ -1491,6 +1621,162 @@ export function setupOpticalSystemChangeListeners(scene) {
             const objectColorBtn = document.getElementById('object-color-btn');
             const segmentColorBtn = document.getElementById('segment-color-btn');
 
+            const surfaceColorsTbody = document.getElementById('surface-colors-tbody');
+            const surfaceColorsPanel = document.getElementById('surface-colors');
+            const surfaceColorsToggle = document.getElementById('surface-colors-toggle');
+
+            const SURFACE_COLOR_OVERRIDES_STORAGE_KEY = 'coopt.surfaceColorOverrides';
+            const COLOR_PALETTE = [
+                { name: 'Light Pink', hex: '#F8BBD0' },
+                { name: 'Light Red', hex: '#FFCDD2' },
+                { name: 'Light Orange', hex: '#FFE0B2' },
+                { name: 'Light Amber', hex: '#FFECB3' },
+                { name: 'Light Yellow', hex: '#FFF9C4' },
+                { name: 'Light Lime', hex: '#F0F4C3' },
+                { name: 'Light Green', hex: '#C8E6C9' },
+                { name: 'Light Mint', hex: '#B2DFDB' },
+                { name: 'Light Cyan', hex: '#B3E5FC' },
+                { name: 'Light Sky', hex: '#BBDEFB' },
+                { name: 'Light Blue', hex: '#90CAF9' },
+                { name: 'Light Indigo', hex: '#C5CAE9' },
+                { name: 'Light Purple', hex: '#E1BEE7' },
+                { name: 'Light Lavender', hex: '#D1C4E9' },
+                { name: 'Light Peach', hex: '#FFCCBC' },
+                { name: 'Light Gray', hex: '#ECEFF1' }
+            ];
+
+            function isPlainObject(v) {
+                return !!v && typeof v === 'object' && !Array.isArray(v);
+            }
+
+            function surfaceColorKey(surf) {
+                try {
+                    const bid = String(surf?._blockId ?? '').trim();
+                    const role = String(surf?._surfaceRole ?? '').trim();
+                    if (bid && role) return 'p:' + bid + '|' + role;
+                } catch (_) {}
+                try {
+                    const sid = Number(surf?.id);
+                    if (Number.isFinite(sid)) return 'id:' + String(Math.floor(sid));
+                } catch (_) {}
+                const idx = Number(surf?.index0);
+                return 'i:' + String(Math.floor(Number.isFinite(idx) ? idx : 0));
+            }
+
+            function loadColorOverrides() {
+                try {
+                    const raw = localStorage.getItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY);
+                    if (!raw) return {};
+                    const parsed = JSON.parse(raw);
+                    return isPlainObject(parsed) ? parsed : {};
+                } catch (_) {
+                    return {};
+                }
+            }
+
+            function saveColorOverrides(map) {
+                try {
+                    localStorage.setItem(SURFACE_COLOR_OVERRIDES_STORAGE_KEY, JSON.stringify(map || {}));
+                } catch (e) {
+                    console.warn('⚠️ Failed to save surface color overrides:', e);
+                }
+            }
+
+            function requestRedrawFromPopup() {
+                try {
+                    if (!window.opener) return;
+                    const viewState = getPopupViewState();
+                    window.opener.postMessage({ action: 'draw-cross', ...viewState }, '*');
+                    if (status) status.textContent = 'Redrawing...';
+                } catch (e) {
+                    console.warn('⚠️ Redraw request failed:', e);
+                }
+            }
+
+            function renderSurfaceColorsTable(surfaces) {
+                if (!surfaceColorsTbody) return;
+                const list = Array.isArray(surfaces) ? surfaces : [];
+                const overrides = loadColorOverrides();
+
+                const applySelectSwatch = (selectEl) => {
+                    try {
+                        const v = String(selectEl?.value || '').trim();
+                        if (!v) {
+                            selectEl.style.backgroundColor = '';
+                            return;
+                        }
+                        // v is a hex string like "#RRGGBB".
+                        selectEl.style.backgroundColor = v;
+                    } catch (_) {}
+                };
+
+                surfaceColorsTbody.innerHTML = '';
+                for (const surf of list) {
+                    const tr = document.createElement('tr');
+
+                    const idx0 = (Number(surf?.index0) || 0);
+                    const tdIndex = document.createElement('td');
+                    tdIndex.textContent = String(idx0);
+
+                    const tdColor = document.createElement('td');
+                    const sel = document.createElement('select');
+                    const key = surfaceColorKey(surf);
+                    const current = (typeof overrides[key] === 'string') ? overrides[key] : '';
+
+                    const optDefault = document.createElement('option');
+                    optDefault.value = '';
+                    optDefault.textContent = 'Default';
+                    sel.appendChild(optDefault);
+
+                    for (const c of COLOR_PALETTE) {
+                        const opt = document.createElement('option');
+                        opt.value = c.hex;
+                        opt.textContent = c.name;
+                        opt.style.color = c.hex;
+                        sel.appendChild(opt);
+                    }
+
+                    sel.value = current;
+                    applySelectSwatch(sel);
+                    sel.addEventListener('change', () => {
+                        const next = String(sel.value || '').trim();
+                        const nextMap = loadColorOverrides();
+                        if (!next) {
+                            delete nextMap[key];
+                        } else {
+                            nextMap[key] = next;
+                        }
+                        saveColorOverrides(nextMap);
+                        applySelectSwatch(sel);
+                        requestRedrawFromPopup();
+                    });
+
+                    tdColor.appendChild(sel);
+
+                    tr.appendChild(tdIndex);
+                    tr.appendChild(tdColor);
+                    surfaceColorsTbody.appendChild(tr);
+                }
+            }
+
+            function applySurfaceColorsCollapsedState(collapsed) {
+                if (!surfaceColorsPanel || !surfaceColorsToggle) return;
+                const isCollapsed = collapsed === true;
+                surfaceColorsPanel.classList.toggle('collapsed', isCollapsed);
+                surfaceColorsToggle.textContent = isCollapsed ? '▶' : '◀';
+            }
+
+            // Default: expanded
+            window.__surfaceColorsCollapsed = false;
+            applySurfaceColorsCollapsedState(window.__surfaceColorsCollapsed);
+
+            if (surfaceColorsToggle) {
+                surfaceColorsToggle.addEventListener('click', () => {
+                    window.__surfaceColorsCollapsed = !window.__surfaceColorsCollapsed;
+                    applySurfaceColorsCollapsedState(window.__surfaceColorsCollapsed);
+                });
+            }
+
             window.__rayColorMode = 'object';
 
             function setPopupRayColorMode(mode) {
@@ -1517,6 +1803,14 @@ export function setupOpticalSystemChangeListeners(scene) {
                     return;
                 }
                 const data = event.data || {};
+                if (data && data.action === 'surface-list') {
+                    try {
+                        renderSurfaceColorsTable(data.surfaces);
+                    } catch (e) {
+                        console.warn('⚠️ Failed to render surface colors table:', e);
+                    }
+                    return;
+                }
                 if (data && data.action === 'request-redraw') {
                     try {
                         const axisRaw = (data.viewAxis || window.__currentViewAxis || 'YZ').toString().toUpperCase();
