@@ -35,6 +35,42 @@ function nextFrame() {
     }
   })();
 
+  const schedulerWindow = (() => {
+    try {
+      const g = (typeof globalThis !== 'undefined') ? globalThis : null;
+      const w = g ? g.__cooptOptimizerSchedulerWindow : null;
+      if (!w || typeof w !== 'object') return null;
+      if (w.closed) return null;
+      return w;
+    } catch (_) {
+      return null;
+    }
+  })();
+
+  const canUseSchedulerRaf = (() => {
+    try {
+      if (!schedulerWindow) return false;
+      if (typeof schedulerWindow.requestAnimationFrame !== 'function') return false;
+      const d = schedulerWindow.document;
+      if (d && d.hidden) return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  const canUseSchedulerTimers = (() => {
+    try {
+      if (!schedulerWindow) return false;
+      if (typeof schedulerWindow.setTimeout !== 'function') return false;
+      const d = schedulerWindow.document;
+      if (d && d.hidden) return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
   const canUseRaf = (() => {
     try {
       if (typeof requestAnimationFrame !== 'function') return false;
@@ -48,6 +84,14 @@ function nextFrame() {
 
   if (!prof) {
     return new Promise((resolve) => {
+      if (canUseSchedulerRaf) {
+        schedulerWindow.requestAnimationFrame(() => resolve());
+        return;
+      }
+      if (canUseSchedulerTimers) {
+        schedulerWindow.setTimeout(() => resolve(), 0);
+        return;
+      }
       if (canUseRaf) {
         requestAnimationFrame(() => resolve());
         return;
@@ -72,6 +116,14 @@ function nextFrame() {
       resolve();
     };
 
+    if (canUseSchedulerRaf) {
+      schedulerWindow.requestAnimationFrame(() => done());
+      return;
+    }
+    if (canUseSchedulerTimers) {
+      schedulerWindow.setTimeout(() => done(), 0);
+      return;
+    }
     if (canUseRaf) {
       requestAnimationFrame(() => done());
       return;

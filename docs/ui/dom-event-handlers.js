@@ -607,12 +607,22 @@ function setupSuggestOptimizeButtons() {
                 // Do NOT auto-stop the optimizer just because the popup closed.
                 if (popup) {
                     try {
+                        if (typeof globalThis !== 'undefined') {
+                            globalThis.__cooptOptimizerSchedulerWindow = popup;
+                        }
+                    } catch (_) {}
+                    try {
                         popupWatchTimer = window.setInterval(() => {
                             if (!popup || popup.closed) {
                                 if (popupWatchTimer) {
                                     try { window.clearInterval(popupWatchTimer); } catch (_) {}
                                     popupWatchTimer = null;
                                 }
+                                try {
+                                    if (typeof globalThis !== 'undefined' && globalThis.__cooptOptimizerSchedulerWindow === popup) {
+                                        globalThis.__cooptOptimizerSchedulerWindow = null;
+                                    }
+                                } catch (_) {}
                             }
                         }, 250);
                     } catch (_) {
