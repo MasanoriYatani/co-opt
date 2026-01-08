@@ -80,7 +80,7 @@ const ensurePopupMessageHandler = () => {
                     controls: popupWindow.controls,
                     scene: popupWindow.scene,
                     renderer: popupWindow.renderer,
-                    includeRayStartMargin: false,
+                    includeRayStartMargin: true,
                     preserveDrawCrossBounds: false,
                     ...(Number.isFinite(centerZOverride) ? { centerZOverride } : {})
                 };
@@ -226,7 +226,7 @@ const ensurePopupMessageHandler = () => {
                         controls: popupWindow.controls,
                         scene: popupWindow.scene,
                         renderer: popupWindow.renderer,
-                        includeRayStartMargin: false,
+                        includeRayStartMargin: true,
                         preserveDrawCrossBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
                         ...(targetOverride ? { targetOverride } : {})
@@ -237,7 +237,7 @@ const ensurePopupMessageHandler = () => {
                         controls: popupWindow.controls,
                         scene: popupWindow.scene,
                         renderer: popupWindow.renderer,
-                        includeRayStartMargin: false,
+                        includeRayStartMargin: true,
                         preserveDrawCrossBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
                         ...(targetOverride ? { targetOverride } : {})
@@ -755,7 +755,7 @@ async function executeCrossSectionView({
             controls: controlsRef,
             renderer: rendererRef,
             scene: sceneRef,
-            includeRayStartMargin: false,
+            includeRayStartMargin: true,
             preserveDrawCrossBounds: true
         };
 
