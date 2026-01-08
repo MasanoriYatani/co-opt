@@ -3649,7 +3649,7 @@ export function setupOpticalSystemChangeListeners(scene) {
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 </head>
 <body>
-    <div class="header">Point Spread Function <span style="font-weight:400;font-size:12px;opacity:0.7;">(build 2026-01-08h)</span></div>
+    <div class="header">Point Spread Function</div>
     <div class="controls">
         <label for="popup-psf-object-select">Object:</label>
         <select id="popup-psf-object-select"><option value="0">1</option></select>
@@ -3693,7 +3693,7 @@ export function setupOpticalSystemChangeListeners(scene) {
     </div>
         <script>
         // Debug: confirm the popup script version in console.
-                try { console.log('[PSF popup] build 2026-01-08h'); } catch (_) {}
+                // build tag intentionally not shown
         function isIOSLike() {
             try {
                 const ua = String(navigator.userAgent || '');
