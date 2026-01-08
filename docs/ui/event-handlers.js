@@ -294,6 +294,93 @@ const ensurePopupMessageHandler = () => {
                     });
                 }
 
+                const objectSurface = opticalSystemRows[0] || {};
+                const thicknessRaw = objectSurface?.thickness;
+                const hasThicknessInfo = thicknessRaw !== undefined && thicknessRaw !== null && thicknessRaw !== '';
+                const thicknessStr = hasThicknessInfo ? String(thicknessRaw).trim().toUpperCase() : '';
+                const thicknessVal = Number(thicknessRaw);
+                const thicknessIndicatesInfinite = hasThicknessInfo && (
+                    thicknessRaw === Infinity ||
+                    thicknessStr === 'INF' ||
+                    thicknessStr === 'INFINITY' ||
+                    thicknessStr === '∞' ||
+                    (Number.isFinite(thicknessVal) && Math.abs(thicknessVal) > 1e6)
+                );
+                const objectRowsIndicateInfinite = !objectRows || objectRows.length === 0 ||
+                    objectRows.every(row => row.position === 'Angle' ||
+                        (!row.height && !row.y && !row.xHeightAngle && !row.yHeightAngle) ||
+                        parseFloat(row.height || 0) === 0);
+                const isInfiniteSystem = hasThicknessInfo ? thicknessIndicatesInfinite : objectRowsIndicateInfinite;
+
+                console.log('📐 Object thickness (popup):', thicknessRaw);
+                console.log('📐 System type:', isInfiniteSystem ? 'Infinite' : 'Finite');
+
+                let crossBeamResult;
+                if (isInfiniteSystem) {
+                    console.log('🔄 Generating infinite system cross beam...');
+                    const objectAngles = objectRows.map(row => ({
+                        x: parseFloat(row.xHeightAngle) || 0,
+                        y: parseFloat(row.yHeightAngle) || 0
+                    }));
+                    console.log('📐 Object angles:', objectAngles);
+
+                    const imageSurfaceIndex = opticalSystemRows.findIndex(row =>
+                        row && (row['object type'] === 'Image' || row.object === 'Image')
+                    );
+                    const targetSurfaceIndex = imageSurfaceIndex >= 0 ? imageSurfaceIndex : Math.max(0, opticalSystemRows.length - 1);
+
+                    const primaryWavelength = (typeof window.getPrimaryWavelength === 'function')
+                        ? Number(window.getPrimaryWavelength()) || 0.5876
+                        : 0.5876;
+
+                    crossBeamResult = await generateInfiniteSystemCrossBeam(opticalSystemRows, objectAngles, {
+                        rayCount,
+                        debugMode: false,
+                        wavelength: primaryWavelength,
+                        crossType: 'both',
+                        targetSurfaceIndex,
+                        pupilSamplingMode: 'entrance',
+                        logEntrancePupilConfig: true,
+                        angleUnit: 'deg',
+                        chiefZ: -20
+                    });
+                } else {
+                    const toNumber = (value) => {
+                        const num = parseFloat(value);
+                        return Number.isFinite(num) ? num : 0;
+                    };
+                    const allObjectPositions = (objectRows || []).map((row, index) => {
+                        if (Array.isArray(row)) {
+                            return {
+                                x: toNumber(row[1]),
+                                y: toNumber(row[2]),
+                                z: 0,
+                                objectIndex: index
+                            };
+                        }
+                        const xCoord = toNumber(row.xHeightAngle ?? row.x ?? row.height ?? row.heightX);
+                        const yCoord = toNumber(row.yHeightAngle ?? row.y ?? row.height ?? row.heightY);
+                        return {
+                            x: xCoord,
+                            y: yCoord,
+                            z: 0,
+                            objectIndex: row.objectIndex ?? index
+                        };
+                    });
+                    if (allObjectPositions.length === 0) {
+                        allObjectPositions.push({ x: 0, y: 0, z: 0 });
+                    }
+                    console.log('🔄 Generating finite system cross beam for positions:', allObjectPositions);
+                    crossBeamResult = await generateCrossBeam(opticalSystemRows, allObjectPositions, {
+                        rayCount,
+                        debugMode: false,
+                        wavelength: 0.5876,
+                        crossType: 'both'
+                    });
+                }
+
+                console.log('📦 Cross beam result:', crossBeamResult);
+
                 if (crossBeamResult.success) {
                     console.log('✅ Drawing rays to popup scene...');
 
