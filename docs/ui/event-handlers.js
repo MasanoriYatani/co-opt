@@ -3776,6 +3776,8 @@ export function setupOpticalSystemChangeListeners(scene) {
                 }
 
                 setProgress(0, 'Starting...');
+                // Allow the popup to paint the progress UI before heavy computation begins.
+                await new Promise(r => setTimeout(r, 0));
                 await window.opener.showPSFDiagram('2d', Number.isFinite(sampling) ? sampling : 128, logScale, Number.isFinite(objectIndex) ? objectIndex : 0, {
                     containerElement: containerEl,
                     statsElement: document.getElementById('popup-psf-container-stats'),
@@ -4080,6 +4082,8 @@ export function setupOpticalSystemChangeListeners(scene) {
                     throw new Error('showMTFDiagram is not available on opener');
                 }
                 setProgress(0, 'Starting...');
+                // Allow the popup to paint the progress UI before heavy computation begins.
+                await new Promise(r => setTimeout(r, 0));
                 await opener.showMTFDiagram({
                     wavelengthMicrons: Number.isFinite(wavelength) ? wavelength : 0.5876,
                     objectIndex: Number.isFinite(objectIndex) ? objectIndex : 0,

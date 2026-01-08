@@ -41,14 +41,32 @@ async function loadWasmCalculatorDirect() {
  */
 export class SimpleFFT {
     static async _yieldToUI() {
+        // NOTE:
+        // - requestAnimationFrame can fully pause when a tab/window is not focused/visible.
+        // - setTimeout(0) is heavily clamped in background tabs (can look like "stuck").
+        // Using MessageChannel yields via a regular task without relying on frame timing.
         try {
-            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-                await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+            if (typeof MessageChannel !== 'undefined') {
+                if (!this.__yieldQueue || !this.__yieldPort) {
+                    this.__yieldQueue = [];
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => {
+                        const resolve = this.__yieldQueue.shift();
+                        if (resolve) resolve();
+                    };
+                    this.__yieldPort = channel.port2;
+                }
+
+                await new Promise(resolve => {
+                    this.__yieldQueue.push(resolve);
+                    this.__yieldPort.postMessage(0);
+                });
                 return;
             }
         } catch (_) {
             // ignore
         }
+
         await new Promise(resolve => setTimeout(resolve, 0));
     }
 
@@ -905,7 +923,12 @@ export class PSFCalculator {
         grid.xCoords.set(gridXs);
         grid.yCoords.set(gridYs);
 
-        const maxRadius = Math.max(Math.abs(bounds.maxX), Math.abs(bounds.maxY));
+        const maxRadius = Math.max(
+            Math.abs(bounds.minX),
+            Math.abs(bounds.maxX),
+            Math.abs(bounds.minY),
+            Math.abs(bounds.maxY)
+        );
 
         // 格子点への補間（空間インデックス利用）
         for (let i = 0; i < samplingSize; i++) {
@@ -938,8 +961,12 @@ export class PSFCalculator {
      * @returns {Object} インデックス情報
      */
     buildRaySpatialIndex(rays, bounds, samplingSize) {
-        // バケツ数：明示指定があれば優先、なければグリッドの半分程度を上限64にクリップ
-        const autoBins = Math.min(64, Math.max(8, Math.floor(samplingSize / 2)));
+        // バケツ数：明示指定があれば優先。
+        // 自動では「グリッド解像度」だけでなく「光線密度」も考慮し、
+        // 1セルあたりの光線が極端に少なくなる（タイル状の最近傍補間になりやすい）状況を避ける。
+        const bySampling = Math.floor(samplingSize / 2);
+        const byRays = Math.floor(Math.sqrt(Math.max(1, rays.length) / 4)); // 目標: 1セルあたり平均4本程度
+        const autoBins = Math.min(64, Math.max(8, Math.min(bySampling, byRays)));
         const bins = this.spatialBinsOverride ?? autoBins;
         const buckets = Array.from({ length: bins * bins }, () => []);
 
@@ -988,41 +1015,67 @@ export class PSFCalculator {
         if (ix < 0) ix = 0; else if (ix >= bins) ix = bins - 1;
         if (iy < 0) iy = 0; else if (iy >= bins) iy = bins - 1;
 
-        // 近傍リングを 0,1,2,... と拡張して探索
-        let bestIdx = -1;
-        let bestD2 = Infinity;
+        // 周辺セルから候補を集め、逆距離重み付け（IDW）で滑らかに補間する。
+        // これにより「1セル=1光線」等で生じるブロック状（タイル状）アーティファクトを抑える。
+        const targetCandidates = 16;
+        const maxCandidates = 64;
+        const candidates = [];
+
+        const pushCell = (cx, cy) => {
+            const cell = buckets[cy * bins + cx];
+            for (let t = 0; t < cell.length; t++) {
+                candidates.push(cell[t]);
+                if (candidates.length >= maxCandidates) return;
+            }
+        };
 
         for (let r = 0; r < bins; r++) {
-            let foundInThisRing = false;
             const minX = Math.max(0, ix - r);
             const maxX = Math.min(bins - 1, ix + r);
             const minY = Math.max(0, iy - r);
             const maxY = Math.min(bins - 1, iy + r);
 
-            for (let cy = minY; cy <= maxY; cy++) {
+            if (r === 0) {
+                pushCell(ix, iy);
+            } else {
                 for (let cx = minX; cx <= maxX; cx++) {
-                    // r==0 のとき中心セルのみ、r>0 のとき正方近傍を走査
-                    const cell = buckets[cy * bins + cx];
-                    if (cell.length === 0) continue;
-                    foundInThisRing = true;
-                    for (let t = 0; t < cell.length; t++) {
-                        const k = cell[t];
-                        const dx = rx[k] - x;
-                        const dy = ry[k] - y;
-                        const d2 = dx * dx + dy * dy;
-                        if (d2 < bestD2) {
-                            bestD2 = d2;
-                            bestIdx = k;
-                        }
+                    pushCell(cx, minY);
+                    if (candidates.length >= maxCandidates) break;
+                    if (maxY !== minY) pushCell(cx, maxY);
+                    if (candidates.length >= maxCandidates) break;
+                }
+                if (candidates.length < maxCandidates) {
+                    for (let cy = minY + 1; cy <= maxY - 1; cy++) {
+                        pushCell(minX, cy);
+                        if (candidates.length >= maxCandidates) break;
+                        if (maxX !== minX) pushCell(maxX, cy);
+                        if (candidates.length >= maxCandidates) break;
                     }
                 }
             }
 
-            // 何か候補が見つかったら、現リングのベストを採用して終了（速度優先）
-            if (foundInThisRing && bestIdx >= 0) break;
+            if (candidates.length >= targetCandidates) break;
+            if (candidates.length >= maxCandidates) break;
         }
 
-        return bestIdx >= 0 ? ropd[bestIdx] : 0;
+        if (candidates.length === 0) return 0;
+
+        let wSum = 0;
+        let zSum = 0;
+        const eps = 1e-12;
+
+        for (let t = 0; t < candidates.length; t++) {
+            const k = candidates[t];
+            const dx = rx[k] - x;
+            const dy = ry[k] - y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 <= eps) return ropd[k];
+            const w = 1.0 / (d2 + eps);
+            wSum += w;
+            zSum += w * ropd[k];
+        }
+
+        return wSum > 0 ? (zSum / wSum) : 0;
     }
 
     /**

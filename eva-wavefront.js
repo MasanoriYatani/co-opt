@@ -4805,15 +4805,31 @@ export class WavefrontAberrationAnalyzer {
     }
 
     async _yieldToUI() {
-        // ブラウザUIが固まるのを防ぐため、定期的にイベントループへ制御を返す
+        // ブラウザUIが固まるのを防ぐため、定期的にイベントループへ制御を返す。
+        // requestAnimationFrame はタブ/ウインドウが非アクティブ時に停止しうるため、
+        // MessageChannel を優先して "確実に進む" yield を行う。
         try {
-            if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-                await new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+            if (typeof MessageChannel !== 'undefined') {
+                if (!this.__yieldQueue || !this.__yieldPort) {
+                    this.__yieldQueue = [];
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => {
+                        const resolve = this.__yieldQueue.shift();
+                        if (resolve) resolve();
+                    };
+                    this.__yieldPort = channel.port2;
+                }
+
+                await new Promise(resolve => {
+                    this.__yieldQueue.push(resolve);
+                    this.__yieldPort.postMessage(0);
+                });
                 return;
             }
         } catch (_) {
             // ignore
         }
+
         await new Promise(resolve => setTimeout(resolve, 0));
     }
 
