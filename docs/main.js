@@ -53,7 +53,7 @@ import { initAIAssistant } from './ai-assistant.js';
 import { setRayEmissionPattern, setRayColorMode, getRayEmissionPattern, getRayColorMode, optimizeObjectPositionForStop, optimizeAngleObjectPosition, generateRayStartPointsForObject, drawRayWithSegmentColors } from './optical/ray-renderer.js';
 
 // UI modules
-import { setupRayPatternButtons, setupRayColorButtons, setupViewButtons, setupOpticalSystemChangeListeners, setupSimpleViewButtons } from './ui/event-handlers.js?v=2026-01-07a';
+import { setupRayPatternButtons, setupRayColorButtons, setupViewButtons, setupOpticalSystemChangeListeners, setupSimpleViewButtons } from './ui/event-handlers.js?v=2026-01-08h';
 import { updateSurfaceNumberSelect, updateAllUIElements, initializeUIEventListeners } from './ui/ui-updates.js';
 import { setupDOMEventHandlers } from './ui/dom-event-handlers.js?v=2026-01-07a';
 import { updateWavefrontObjectSelect, initializeWavefrontObjectUI, debugResetObjectTable } from './ui/wavefront-object-select.js';

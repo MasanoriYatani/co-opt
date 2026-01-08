@@ -294,93 +294,6 @@ const ensurePopupMessageHandler = () => {
                     });
                 }
 
-                const objectSurface = opticalSystemRows[0] || {};
-                const thicknessRaw = objectSurface?.thickness;
-                const hasThicknessInfo = thicknessRaw !== undefined && thicknessRaw !== null && thicknessRaw !== '';
-                const thicknessStr = hasThicknessInfo ? String(thicknessRaw).trim().toUpperCase() : '';
-                const thicknessVal = Number(thicknessRaw);
-                const thicknessIndicatesInfinite = hasThicknessInfo && (
-                    thicknessRaw === Infinity ||
-                    thicknessStr === 'INF' ||
-                    thicknessStr === 'INFINITY' ||
-                    thicknessStr === '∞' ||
-                    (Number.isFinite(thicknessVal) && Math.abs(thicknessVal) > 1e6)
-                );
-                const objectRowsIndicateInfinite = !objectRows || objectRows.length === 0 ||
-                    objectRows.every(row => row.position === 'Angle' ||
-                        (!row.height && !row.y && !row.xHeightAngle && !row.yHeightAngle) ||
-                        parseFloat(row.height || 0) === 0);
-                const isInfiniteSystem = hasThicknessInfo ? thicknessIndicatesInfinite : objectRowsIndicateInfinite;
-
-                console.log('📐 Object thickness (popup):', thicknessRaw);
-                console.log('📐 System type:', isInfiniteSystem ? 'Infinite' : 'Finite');
-
-                let crossBeamResult;
-                if (isInfiniteSystem) {
-                    console.log('🔄 Generating infinite system cross beam...');
-                    const objectAngles = objectRows.map(row => ({
-                        x: parseFloat(row.xHeightAngle) || 0,
-                        y: parseFloat(row.yHeightAngle) || 0
-                    }));
-                    console.log('📐 Object angles:', objectAngles);
-
-                    const imageSurfaceIndex = opticalSystemRows.findIndex(row =>
-                        row && (row['object type'] === 'Image' || row.object === 'Image')
-                    );
-                    const targetSurfaceIndex = imageSurfaceIndex >= 0 ? imageSurfaceIndex : Math.max(0, opticalSystemRows.length - 1);
-
-                    const primaryWavelength = (typeof window.getPrimaryWavelength === 'function')
-                        ? Number(window.getPrimaryWavelength()) || 0.5876
-                        : 0.5876;
-
-                    crossBeamResult = await generateInfiniteSystemCrossBeam(opticalSystemRows, objectAngles, {
-                        rayCount,
-                        debugMode: false,
-                        wavelength: primaryWavelength,
-                        crossType: 'both',
-                        targetSurfaceIndex,
-                        pupilSamplingMode: 'entrance',
-                        logEntrancePupilConfig: true,
-                        angleUnit: 'deg',
-                        chiefZ: -20
-                    });
-                } else {
-                    const toNumber = (value) => {
-                        const num = parseFloat(value);
-                        return Number.isFinite(num) ? num : 0;
-                    };
-                    const allObjectPositions = (objectRows || []).map((row, index) => {
-                        if (Array.isArray(row)) {
-                            return {
-                                x: toNumber(row[1]),
-                                y: toNumber(row[2]),
-                                z: 0,
-                                objectIndex: index
-                            };
-                        }
-                        const xCoord = toNumber(row.xHeightAngle ?? row.x ?? row.height ?? row.heightX);
-                        const yCoord = toNumber(row.yHeightAngle ?? row.y ?? row.height ?? row.heightY);
-                        return {
-                            x: xCoord,
-                            y: yCoord,
-                            z: 0,
-                            objectIndex: row.objectIndex ?? index
-                        };
-                    });
-                    if (allObjectPositions.length === 0) {
-                        allObjectPositions.push({ x: 0, y: 0, z: 0 });
-                    }
-                    console.log('🔄 Generating finite system cross beam for positions:', allObjectPositions);
-                    crossBeamResult = await generateCrossBeam(opticalSystemRows, allObjectPositions, {
-                        rayCount,
-                        debugMode: false,
-                        wavelength: 0.5876,
-                        crossType: 'both'
-                    });
-                }
-
-                console.log('📦 Cross beam result:', crossBeamResult);
-
                 if (crossBeamResult.success) {
                     console.log('✅ Drawing rays to popup scene...');
 
@@ -3336,17 +3249,63 @@ export function setupOpticalSystemChangeListeners(scene) {
             if (!openerSelect || !popupSelect) return;
 
             const current = popupSelect.value;
+            const nextOptions = [];
+
+            // MTF-style: build from opener.getObjectRows() first.
+            let opener = null;
+            try { opener = window.opener || null; } catch (_) { opener = null; }
+            let objects = [];
+            if (opener && typeof opener.getObjectRows === 'function') {
+                try { objects = opener.getObjectRows(opener.tableObject); } catch (_) { objects = []; }
+            }
+            if (Array.isArray(objects) && objects.length > 0) {
+                const toFiniteNumber = (v) => {
+                    const n = (typeof v === 'number') ? v : parseFloat(v);
+                    return (Number.isFinite(n) ? n : NaN);
+                };
+                const pickNumber = (obj, keys, fallback) => {
+                    for (let i = 0; i < keys.length; i++) {
+                        const k = keys[i];
+                        if (!k) continue;
+                        const raw = obj ? obj[k] : undefined;
+                        if (raw === undefined || raw === null || raw === '') continue;
+                        const n = toFiniteNumber(raw);
+                        if (Number.isFinite(n)) return n;
+                    }
+                    return fallback;
+                };
+                for (let i = 0; i < objects.length; i++) {
+                    const obj = objects[i];
+                    if (!obj) continue;
+                    const typeRaw = String(obj.position ?? obj.object ?? obj.Object ?? obj.objectType ?? 'Point');
+                    const x = (obj.x ?? obj.xHeightAngle ?? 0);
+                    const y = (obj.y ?? obj.yHeightAngle ?? 0);
+                    nextOptions.push({ value: String(i), label: (String(i + 1) + ': ' + typeRaw + ' (' + x + ', ' + y + ')') });
+                }
+            }
+
+            // Fallback: clone opener select.
+            if (nextOptions.length === 0) {
+                Array.from(openerSelect.options).forEach(opt => {
+                    nextOptions.push({ value: String(opt.value), label: String(opt.textContent ?? '') });
+                });
+            }
+            if (nextOptions.length === 0) nextOptions.push({ value: '0', label: '0' });
+
             popupSelect.innerHTML = '';
-            Array.from(openerSelect.options).forEach(opt => {
+            for (const opt of nextOptions) {
                 const o = document.createElement('option');
                 o.value = opt.value;
-                o.textContent = opt.textContent;
+                o.textContent = opt.label;
                 popupSelect.appendChild(o);
-            });
+            }
+
             if (current && Array.from(popupSelect.options).some(o => o.value === current)) {
                 popupSelect.value = current;
+            } else if (openerSelect && openerSelect.value && Array.from(popupSelect.options).some(o => o.value === openerSelect.value)) {
+                popupSelect.value = openerSelect.value;
             } else {
-                popupSelect.value = openerSelect.value || '0';
+                popupSelect.value = popupSelect.options[0]?.value ?? '0';
             }
         }
 
@@ -3388,7 +3347,13 @@ export function setupOpticalSystemChangeListeners(scene) {
             const popupPlotType = document.getElementById('popup-wavefront-plot-type-select');
             const popupGrid = document.getElementById('popup-wavefront-grid-size-select');
 
-            const objectIndex = popupObject ? parseInt(popupObject.value, 10) : 0;
+            const objectIndex = (() => {
+                if (!popupObject) return 0;
+                const v = parseInt(String(popupObject.value), 10);
+                if (Number.isFinite(v)) return v;
+                const idx = Number(popupObject.selectedIndex);
+                return Number.isFinite(idx) && idx >= 0 ? idx : 0;
+            })();
             const plotType = popupPlotType ? popupPlotType.value : 'surface';
             const gridSize = popupGrid ? parseInt(popupGrid.value, 10) : 64;
 
@@ -3400,9 +3365,7 @@ export function setupOpticalSystemChangeListeners(scene) {
             if (openerGrid && Number.isFinite(gridSize)) openerGrid.value = String(gridSize);
 
             try {
-                if (!window.opener || typeof window.opener.showWavefrontDiagram !== 'function') {
-                    throw new Error('showWavefrontDiagram is not available on opener');
-                }
+                const computeInPopup = false;
                 
                 // Create cancel token (reuse PSF helper if available, or inline)
                 const createCancelToken = window.opener.createCancelToken || (() => {
@@ -3446,11 +3409,66 @@ export function setupOpticalSystemChangeListeners(scene) {
                 };
                 
                 try {
-                    await window.opener.showWavefrontDiagram(plotType, 'opd', Number.isFinite(gridSize) ? gridSize : 64, Number.isFinite(objectIndex) ? objectIndex : 0, {
-                        containerElement: containerEl,
-                        cancelToken: popupCancelToken,
-                        onProgress
-                    });
+                    if (computeInPopup) {
+                        const baseHref = (() => {
+                            try {
+                                return (window.opener && window.opener.location && window.opener.location.href)
+                                    ? window.opener.location.href
+                                    : window.location.href;
+                            } catch (_) {
+                                return window.location.href;
+                            }
+                        })();
+
+                        // eva-wavefront-plot expects several helpers on window.
+                        try {
+                            if (window.opener) {
+                                if (typeof window.getOpticalSystemRows !== 'function' && typeof window.opener.getOpticalSystemRows === 'function') {
+                                    window.getOpticalSystemRows = () => window.opener.getOpticalSystemRows();
+                                }
+                                if (typeof window.getObjectRows !== 'function' && typeof window.opener.getObjectRows === 'function') {
+                                    window.getObjectRows = () => window.opener.getObjectRows();
+                                }
+                                if (typeof window.getSourceRows !== 'function' && typeof window.opener.getSourceRows === 'function') {
+                                    window.getSourceRows = () => window.opener.getSourceRows();
+                                }
+                            }
+                        } catch (_) {}
+
+                        try {
+                            const wf = await import(new URL('./eva-wavefront.js', baseHref).href);
+                            if (typeof window.createOPDCalculator !== 'function' && typeof wf.createOPDCalculator === 'function') {
+                                window.createOPDCalculator = wf.createOPDCalculator;
+                            }
+                            if (typeof window.createWavefrontAnalyzer !== 'function' && typeof wf.createWavefrontAnalyzer === 'function') {
+                                window.createWavefrontAnalyzer = wf.createWavefrontAnalyzer;
+                            }
+                            if (typeof window.WavefrontAberrationAnalyzer !== 'function' && typeof wf.WavefrontAberrationAnalyzer === 'function') {
+                                window.WavefrontAberrationAnalyzer = wf.WavefrontAberrationAnalyzer;
+                            }
+                            if (typeof window.OpticalPathDifferenceCalculator !== 'function' && typeof wf.OpticalPathDifferenceCalculator === 'function') {
+                                window.OpticalPathDifferenceCalculator = wf.OpticalPathDifferenceCalculator;
+                            }
+                        } catch (_) {}
+                        const mod = await import(new URL('./eva-wavefront-plot.js', baseHref).href);
+                        if (!mod || typeof mod.showWavefrontDiagram !== 'function') {
+                            throw new Error('showWavefrontDiagram is not available (popup import)');
+                        }
+                        await mod.showWavefrontDiagram(plotType, 'opd', Number.isFinite(gridSize) ? gridSize : 64, Number.isFinite(objectIndex) ? objectIndex : 0, {
+                            containerElement: containerEl,
+                            cancelToken: popupCancelToken,
+                            onProgress
+                        });
+                    } else {
+                        if (!window.opener || typeof window.opener.showWavefrontDiagram !== 'function') {
+                            throw new Error('showWavefrontDiagram is not available on opener');
+                        }
+                        await window.opener.showWavefrontDiagram(plotType, 'opd', Number.isFinite(gridSize) ? gridSize : 64, Number.isFinite(objectIndex) ? objectIndex : 0, {
+                            containerElement: containerEl,
+                            cancelToken: popupCancelToken,
+                            onProgress
+                        });
+                    }
                     setProgress(100, 'Done');
                     resizePlot();
                 } catch (err) {
@@ -3519,12 +3537,15 @@ export function setupOpticalSystemChangeListeners(scene) {
         if (openPsfWindowBtn) {
                 openPsfWindowBtn.addEventListener('click', () => {
                         if (window.__psfPopup && !window.__psfPopup.closed) {
-                                try { window.__psfPopup.focus(); } catch (_) {}
-                                return;
+                                // Always reopen fresh so stale about:blank popup code can't persist.
+                                try { window.__psfPopup.close(); } catch (_) {}
+                                window.__psfPopup = null;
                         }
 
                         const popup = window.open('', 'Point Spread Function', 'width=800,height=600');
                         window.__psfPopup = popup;
+
+                        try { popup.document.open(); } catch (_) {}
 
                         popup.document.write(`
 <!DOCTYPE html>
@@ -3593,10 +3614,10 @@ export function setupOpticalSystemChangeListeners(scene) {
     <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
 </head>
 <body>
-    <div class="header">Point Spread Function</div>
+    <div class="header">Point Spread Function <span style="font-weight:400;font-size:12px;opacity:0.7;">(build 2026-01-08h)</span></div>
     <div class="controls">
         <label for="popup-psf-object-select">Object:</label>
-        <select id="popup-psf-object-select"></select>
+        <select id="popup-psf-object-select"><option value="0">1</option></select>
         <label for="popup-psf-sampling-select">Sampling:</label>
         <select id="popup-psf-sampling-select">
             <option value="32">32x32</option>
@@ -3635,8 +3656,19 @@ export function setupOpticalSystemChangeListeners(scene) {
         <div id="popup-psf-container"></div>
         <div id="popup-psf-container-stats"></div>
     </div>
+        <script>
+        // Debug: confirm the popup script version in console.
+                try { console.log('[PSF popup] build 2026-01-08h'); } catch (_) {}
+        function isIOSLike() {
+            try {
+                const ua = String(navigator.userAgent || '');
+                if (/iPad|iPhone|iPod/i.test(ua)) return true;
+                // iPadOS 13+ may masquerade as Mac
+                if (/Macintosh/i.test(ua) && Number(navigator.maxTouchPoints || 0) > 1) return true;
+            } catch (_) {}
+            return false;
+        }
 
-    <script>
         function createCancelToken() {
             return {
                 aborted: false,
@@ -3664,6 +3696,17 @@ export function setupOpticalSystemChangeListeners(scene) {
 
         let activeCancelToken = null;
 
+        let __psfObjectSyncRetries = 0;
+        const __psfScheduleObjectResync = () => {
+            // On some loads, the opener's Tabulator may not be ready yet; retry briefly.
+            if (__psfObjectSyncRetries >= 60) return;
+            const delay = Math.min(2000, 150 + (__psfObjectSyncRetries * 150));
+            __psfObjectSyncRetries++;
+            setTimeout(() => {
+                try { syncObjectOptionsFromOpener(); } catch (_) {}
+            }, delay);
+        };
+
         function getOpenerEl(id) {
             try {
                 return window.opener && window.opener.document ? window.opener.document.getElementById(id) : null;
@@ -3673,22 +3716,114 @@ export function setupOpticalSystemChangeListeners(scene) {
         }
 
         function syncObjectOptionsFromOpener() {
-            const openerSelect = getOpenerEl('psf-object-select');
+            const openerPsfSelect = getOpenerEl('psf-object-select');
+            const openerWavefrontSelect = getOpenerEl('wavefront-object-select');
+            const openerSelect = openerWavefrontSelect || openerPsfSelect;
             const popupSelect = document.getElementById('popup-psf-object-select');
-            if (!openerSelect || !popupSelect) return;
+            if (!popupSelect) return;
+
+            const toFiniteNumber = (v) => {
+                const n = (typeof v === 'number') ? v : parseFloat(v);
+                return Number.isFinite(n) ? n : NaN;
+            };
+            const pickNumber = (obj, keys, fallback) => {
+                for (let i = 0; i < keys.length; i++) {
+                    const k = keys[i];
+                    if (!k) continue;
+                    const raw = obj ? obj[k] : undefined;
+                    if (raw === undefined || raw === null || raw === '') continue;
+                    const n = toFiniteNumber(raw);
+                    if (Number.isFinite(n)) return n;
+                }
+                return fallback;
+            };
 
             const current = popupSelect.value;
+            const nextOptions = [];
+
+            // OPD/MTF-style: build options from opener.getObjectRows() first.
+            let opener = null;
+            try { opener = window.opener || null; } catch (_) { opener = null; }
+            let objects = [];
+            if (opener && typeof opener.getObjectRows === 'function') {
+                try {
+                    objects = opener.getObjectRows(opener.tableObject);
+                    if (!Array.isArray(objects) || objects.length === 0) objects = [];
+                } catch (_) {
+                    objects = [];
+                }
+            }
+            if (Array.isArray(objects) && objects.length > 0) {
+                for (let i = 0; i < objects.length; i++) {
+                    const obj = objects[i];
+                    if (!obj) continue;
+                    const typeRaw = String(
+                        (obj.position !== undefined && obj.position !== null) ? obj.position :
+                        (obj.object !== undefined && obj.object !== null) ? obj.object :
+                        (obj.Object !== undefined && obj.Object !== null) ? obj.Object :
+                        (obj.objectType !== undefined && obj.objectType !== null) ? obj.objectType :
+                        'Point'
+                    );
+                    const x = pickNumber(obj, ['x', 'X', 'xFieldAngle', 'xAngle', 'xHeightAngle', 'XHeightAngle', 'x_height_angle', 'x_field_angle', 'x_angle'], 0);
+                    const y = pickNumber(obj, ['y', 'Y', 'yFieldAngle', 'yAngle', 'yHeightAngle', 'YHeightAngle', 'y_height_angle', 'y_field_angle', 'y_angle', 'fieldAngle', 'angle'], 0);
+                    nextOptions.push({ value: String(i), label: (String(i + 1) + ': ' + typeRaw + ' (' + x + ', ' + y + ')') });
+                }
+            }
+
+            // Fallback: clone opener select options if present (but ignore single placeholder).
+            if (nextOptions.length === 0 && openerSelect && openerSelect.options && openerSelect.options.length > 0) {
+                const opts = Array.from(openerSelect.options);
+                let looksLikePlaceholder = false;
+                if (opts.length === 1) {
+                    const t = String(opts[0].textContent || '').trim().toLowerCase();
+                    looksLikePlaceholder = (t === '0' || t === 'object 1' || t === 'object1');
+                }
+                if (!looksLikePlaceholder) {
+                    const normalizeLabel = (label) => {
+                        const s = String(label || '').trim();
+                        // Convert e.g. "Object1 : Angle (...)" / "Object 1: ..." / "object1" => "1: ..." / "1"
+                        const m = s.match(/^object\s*(\d+)\s*[:：]?\s*(.*)$/i);
+                        if (m) {
+                            const n = m[1];
+                            const rest = String(m[2] || '').trim();
+                            return rest ? (n + ': ' + rest) : String(n);
+                        }
+                        return s;
+                    };
+                    opts.forEach(opt => {
+                        const raw = String((opt.textContent !== undefined && opt.textContent !== null) ? opt.textContent : '');
+                        nextOptions.push({ value: String(opt.value), label: normalizeLabel(raw) });
+                    });
+                }
+            }
+
+            if (nextOptions.length === 0) {
+                nextOptions.push({ value: '0', label: '1' });
+                __psfScheduleObjectResync();
+            } else {
+                __psfObjectSyncRetries = 0;
+            }
+
             popupSelect.innerHTML = '';
-            Array.from(openerSelect.options).forEach(opt => {
+            for (const opt of nextOptions) {
                 const o = document.createElement('option');
                 o.value = opt.value;
-                o.textContent = opt.textContent;
+                o.textContent = opt.label;
                 popupSelect.appendChild(o);
-            });
+            }
+
             if (current && Array.from(popupSelect.options).some(o => o.value === current)) {
                 popupSelect.value = current;
+                return;
+            }
+            const preferred = (openerPsfSelect && openerPsfSelect.value)
+                ? openerPsfSelect.value
+                : (openerSelect && openerSelect.value ? openerSelect.value : '');
+            if (preferred && Array.from(popupSelect.options).some(o => o.value === preferred)) {
+                popupSelect.value = preferred;
             } else {
-                popupSelect.value = openerSelect.value || '0';
+                const firstOpt = (popupSelect.options && popupSelect.options.length > 0) ? popupSelect.options[0] : null;
+                popupSelect.value = (firstOpt && firstOpt.value !== undefined && firstOpt.value !== null) ? firstOpt.value : '0';
             }
         }
 
@@ -3708,7 +3843,11 @@ export function setupOpticalSystemChangeListeners(scene) {
                     popupZernikeSampling.value = popupSampling.value;
                 }
             }
-            if (openerLog && popupLog) popupLog.checked = openerLog.checked;
+            // Default: Log scale should start unchecked for PSF.
+            try {
+                if (openerLog) openerLog.checked = false;
+                if (popupLog) popupLog.checked = false;
+            } catch (_) {}
         }
 
         function resizePlot() {
@@ -3755,7 +3894,10 @@ export function setupOpticalSystemChangeListeners(scene) {
             const popupLog = document.getElementById('popup-psf-log-scale-checkbox');
             const popupForceWasm = document.getElementById('popup-psf-force-wasm-checkbox');
 
-            const objectIndex = popupObject ? parseInt(popupObject.value, 10) : 0;
+            let objectIndex = popupObject ? parseInt(popupObject.value, 10) : 0;
+            if (!Number.isFinite(objectIndex) && popupObject && Number.isFinite(popupObject.selectedIndex)) {
+                objectIndex = popupObject.selectedIndex;
+            }
             const sampling = popupSampling ? parseInt(popupSampling.value, 10) : 128;
             const zernikeSampling = popupZernikeSampling ? parseInt(popupZernikeSampling.value, 10) : sampling;
             const logScale = !!(popupLog && popupLog.checked);
@@ -3771,28 +3913,333 @@ export function setupOpticalSystemChangeListeners(scene) {
             if (openerLog) openerLog.checked = logScale;
 
             try {
-                if (!window.opener || typeof window.opener.showPSFDiagram !== 'function') {
-                    throw new Error('showPSFDiagram is not available on opener');
-                }
-
                 setProgress(0, 'Starting...');
                 // Allow the popup to paint the progress UI before heavy computation begins.
                 await new Promise(r => setTimeout(r, 0));
-                await window.opener.showPSFDiagram('2d', Number.isFinite(sampling) ? sampling : 128, logScale, Number.isFinite(objectIndex) ? objectIndex : 0, {
-                    containerElement: containerEl,
-                    statsElement: document.getElementById('popup-psf-container-stats'),
-                    forceImplementation: forceWasm ? 'wasm' : null,
-                    zernikeFitSamplingSize: Number.isFinite(zernikeSampling) ? zernikeSampling : undefined,
-                    cancelToken: activeCancelToken,
-                    onProgress: (evt) => {
+
+                const onProgress = (evt) => {
+                    try {
+                        const p = Number(evt && evt.percent);
+                        const msg = (evt && evt.message) || (evt && evt.phase) || 'Working...';
+                        if (Number.isFinite(p)) setProgress(p, msg);
+                        else setProgress(undefined, msg);
+                    } catch (_) {}
+                };
+
+                // Always compute inside the popup to avoid background throttling of the opener
+                // when the main window is hidden/minimized/unfocused.
+                const computeInPopup = true;
+
+                if (computeInPopup) {
+                    const moduleURL = (relPath) => {
+                        const baseHref = (() => {
+                            try {
+                                return (window.opener && window.opener.location && window.opener.location.href)
+                                    ? window.opener.location.href
+                                    : window.location.href;
+                            } catch (_) {
+                                return window.location.href;
+                            }
+                        })();
+                        return new URL(relPath, baseHref).href;
+                    };
+
+                    const throwIfCancelled = (token) => {
+                        if (token && token.aborted) {
+                            const err = new Error(String(token.reason || 'Cancelled'));
+                            err.code = 'CANCELLED';
+                            throw err;
+                        }
+                    };
+                    const raceWithCancel = async (promise, token) => {
+                        if (!token) return await promise;
+                        throwIfCancelled(token);
+                        const cancelPromise = new Promise((_, reject) => {
+                            token.onAbort((reason) => {
+                                const err = new Error(String(reason || 'Cancelled'));
+                                err.code = 'CANCELLED';
+                                reject(err);
+                            });
+                        });
+                        return await Promise.race([promise, cancelPromise]);
+                    };
+
+                    const [{ getOpticalSystemRows, getObjectRows, getSourceRows }, { PSFPlotter }, { createOPDCalculator, WavefrontAberrationAnalyzer }, { PSFCalculator }, { calculateFocalLength, findStopSurfaceIndex }, { DEFAULT_STOP_SEMI_DIAMETER }] = await Promise.all([
+                        import(moduleURL('./utils/data-utils.js')),
+                        import(moduleURL('./eva-psf-plot.js')),
+                        import(moduleURL('./eva-wavefront.js')),
+                        import(moduleURL('./eva-psf.js')),
+                        import(moduleURL('./ray-paraxial.js')),
+                        import(moduleURL('./block-schema.js'))
+                    ]);
+
+                    const cloneRows = (rows) => {
+                        if (!Array.isArray(rows)) return rows;
                         try {
-                            const p = Number(evt?.percent);
-                            const msg = evt?.message || evt?.phase || 'Working...';
-                            if (Number.isFinite(p)) setProgress(p, msg);
-                            else setProgress(undefined, msg);
+                            if (typeof structuredClone === 'function') return structuredClone(rows);
                         } catch (_) {}
+                        try {
+                            return JSON.parse(JSON.stringify(rows));
+                        } catch (_) {
+                            return rows;
+                        }
+                    };
+
+                    const opticalSystemRows = (() => {
+                        try {
+                            if (window.opener && typeof window.opener.getOpticalSystemRows === 'function') {
+                                // Prefer live Tabulator table data if available.
+                                const r = window.opener.getOpticalSystemRows(window.opener.tableOpticalSystem);
+                                if (Array.isArray(r) && r.length > 0) return cloneRows(r);
+                            }
+                        } catch (_) {}
+                        return getOpticalSystemRows(window.tableOpticalSystem);
+                    })();
+
+                    const objects = (() => {
+                        try {
+                            if (window.opener && typeof window.opener.getObjectRows === 'function') {
+                                const r = window.opener.getObjectRows(window.opener.tableObject);
+                                if (Array.isArray(r) && r.length > 0) return cloneRows(r);
+                            }
+                        } catch (_) {}
+                        return getObjectRows(window.tableObject);
+                    })();
+
+                    const sources = (() => {
+                        try {
+                            if (window.opener && typeof window.opener.getSourceRows === 'function') {
+                                const r = window.opener.getSourceRows(window.opener.tableSource);
+                                if (Array.isArray(r) && r.length > 0) return cloneRows(r);
+                            }
+                        } catch (_) {}
+                        return getSourceRows ? getSourceRows(window.tableSource) : [];
+                    })();
+                    if (!Array.isArray(opticalSystemRows) || opticalSystemRows.length === 0) throw new Error('No optical system data (popup).');
+                    if (!Array.isArray(objects) || objects.length === 0) throw new Error('No object data (popup).');
+
+                    const toFiniteNumber = (v) => {
+                        const n = (typeof v === 'number') ? v : parseFloat(v);
+                        return (Number.isFinite(n) ? n : NaN);
+                    };
+                    const pickNumber = (obj, keys, fallback) => {
+                        for (let i = 0; i < keys.length; i++) {
+                            const k = keys[i];
+                            if (!k) continue;
+                            const raw = obj ? obj[k] : undefined;
+                            if (raw === undefined || raw === null || raw === '') continue;
+                            const n = toFiniteNumber(raw);
+                            if (Number.isFinite(n)) return n;
+                        }
+                        return fallback;
+                    };
+
+                    let idx = Number.isFinite(objectIndex) ? objectIndex : 0;
+                    // If the select values are 1-based for any reason, normalize.
+                    if ((idx >= objects.length) && idx > 0 && (idx - 1) < objects.length) idx = idx - 1;
+                    if (idx < 0) idx = 0;
+                    const selectedObject = objects[idx];
+                    if (!selectedObject) throw new Error('Selected object not found (popup).');
+
+                    const primaryWl = (() => {
+                        try {
+                            if (window.opener && typeof window.opener.getPrimaryWavelength === 'function') {
+                                const v = Number(window.opener.getPrimaryWavelength());
+                                if (Number.isFinite(v) && v > 0) return v;
+                            }
+                        } catch (_) {}
+                        return NaN;
+                    })();
+                    const s0 = (sources && sources.length > 0) ? sources[0] : null;
+                    const wl0 = (s0 && s0.wavelength !== undefined && s0.wavelength !== null) ? Number(s0.wavelength) : NaN;
+                    const wavelength = Number.isFinite(primaryWl) ? primaryWl : (Number.isFinite(wl0) ? wl0 : 0.5876);
+
+                    // Match showPSFDiagram(): build a fieldSetting compatible with eva-wavefront.js.
+                    const objectX = pickNumber(selectedObject, ['x', 'X', 'xFieldAngle', 'xAngle', 'xHeightAngle', 'XHeightAngle', 'x_height_angle', 'x_field_angle', 'x_angle'], 0);
+                    const objectY = pickNumber(selectedObject, ['y', 'Y', 'yFieldAngle', 'yAngle', 'yHeightAngle', 'YHeightAngle', 'y_height_angle', 'y_field_angle', 'y_angle', 'fieldAngle', 'angle'], 0);
+                    const objectTypeRaw = String(
+                        (selectedObject && selectedObject.position !== undefined && selectedObject.position !== null) ? selectedObject.position :
+                        (selectedObject && selectedObject.object !== undefined && selectedObject.object !== null) ? selectedObject.object :
+                        (selectedObject && selectedObject.Object !== undefined && selectedObject.Object !== null) ? selectedObject.Object :
+                        (selectedObject && selectedObject.objectType !== undefined && selectedObject.objectType !== null) ? selectedObject.objectType :
+                        'Point'
+                    );
+                    const objectType = objectTypeRaw;
+                    const objectTypeLower = String(objectTypeRaw).toLowerCase();
+                    let fieldAngle = { x: 0, y: 0 };
+                    let xHeight = 0;
+                    let yHeight = 0;
+                    if (/\\bangle\\b/.test(objectTypeLower)) {
+                        fieldAngle = { x: Number(objectX) || 0, y: Number(objectY) || 0 };
+                        xHeight = 0;
+                        yHeight = 0;
+                    } else {
+                        fieldAngle = { x: 0, y: 0 };
+                        xHeight = Number(objectX) || 0;
+                        yHeight = Number(objectY) || 0;
                     }
-                });
+                    const fieldSetting = {
+                        objectIndex: idx,
+                        type: objectType,
+                        fieldAngle,
+                        xHeight,
+                        yHeight,
+                        wavelength
+                    };
+
+                    // Mirror the main window's PSF trace line to confirm field-setting changes.
+                    try {
+                        const fa = (fieldSetting && fieldSetting.fieldAngle && typeof fieldSetting.fieldAngle === 'object')
+                            ? fieldSetting.fieldAngle
+                            : { x: 0, y: 0 };
+                        const line = '🧭 [PSF popup] objectIndex=' + idx + ' type=' + objectType +
+                            ' fieldAngle=(' + (Number(fa.x) || 0) + ',' + (Number(fa.y) || 0) + ')' +
+                            ' height=(' + (Number(fieldSetting && fieldSetting.xHeight) || 0) + ',' + (Number(fieldSetting && fieldSetting.yHeight) || 0) + ')' +
+                            ' wl=' + (Number(wavelength) || 0);
+                        console.log(line);
+                        try {
+                            if (window.opener && window.opener.console && typeof window.opener.console.log === 'function') {
+                                window.opener.console.log(line);
+                            }
+                        } catch (_) {}
+                    } catch (_) {}
+
+                    const opdCalculator = createOPDCalculator(opticalSystemRows, wavelength);
+                    const analyzer = new WavefrontAberrationAnalyzer(opdCalculator);
+                    onProgress({ percent: 0, phase: 'opd', message: 'OPD...' });
+                    const wavefrontMap = await raceWithCancel(analyzer.generateWavefrontMap(fieldSetting, Number.isFinite(zernikeSampling) ? zernikeSampling : sampling, 'circular', {
+                        // PSF input grid should be sampled from the Zernike-fitted surface.
+                        recordRays: false,
+                        progressEvery: 0,
+                        zernikeMaxNoll: 36,
+                        renderFromZernike: true,
+                        cancelToken: activeCancelToken,
+                        onProgress: (evt) => {
+                            const p = Number(evt && evt.percent);
+                            const msg = (evt && evt.message) || (evt && evt.phase) || 'OPD...';
+                            const phase = (evt && evt.phase) ? evt.phase : 'opd';
+                            if (Number.isFinite(p)) onProgress({ percent: Math.max(0, Math.min(80, p * 0.8)), phase, message: msg });
+                            else onProgress({ percent: null, phase, message: msg });
+                        }
+                    }), activeCancelToken);
+                    throwIfCancelled(activeCancelToken);
+
+                    if (wavefrontMap && wavefrontMap.error) {
+                        const err = new Error((wavefrontMap.error && wavefrontMap.error.message) ? wavefrontMap.error.message : 'Wavefront generation failed (popup).');
+                        err.code = 'WAVEFRONT_UNAVAILABLE';
+                        err.wavefrontError = wavefrontMap.error;
+                        throw err;
+                    }
+
+                    const psfSamplingSize = Number.isFinite(sampling) ? sampling : 128;
+                    // PSF: tilt は含める（pistonのみ 0）。
+                    // eva-wavefront.js の usedCoefficientsMicrons は表示用に piston/tilt を除去しているため、
+                    // ここではフィット係数（生）を一時的に使ってZernike面を評価する。
+                    const model = wavefrontMap && wavefrontMap.zernikeModel ? wavefrontMap.zernikeModel : null;
+                    const savedUsed = model ? model.usedCoefficientsMicrons : null;
+                    try {
+                        if (model && model.fitCoefficientsMicrons && typeof model.fitCoefficientsMicrons === 'object') {
+                            const coeffs = { ...model.fitCoefficientsMicrons };
+                            coeffs[1] = 0;
+                            model.usedCoefficientsMicrons = coeffs;
+                        }
+                    } catch (_) {}
+
+                    const zGrid = analyzer.generateZernikeRenderGrid(wavefrontMap, psfSamplingSize, 'opd', { rhoMax: 1.0 });
+                    try {
+                        if (model) model.usedCoefficientsMicrons = savedUsed;
+                    } catch (_) {}
+                    if (!zGrid || !Array.isArray(zGrid.z) || !Array.isArray(zGrid.z[0])) throw new Error('Zernike render grid generation failed (popup).');
+
+                    const s = Math.max(2, Math.floor(Number(psfSamplingSize)));
+                    const opdGrid = Array.from({ length: s }, () => new Float32Array(s));
+                    const ampGrid = Array.from({ length: s }, () => new Float32Array(s));
+                    const maskGrid = Array.from({ length: s }, () => Array(s).fill(false));
+                    const xCoords = new Float32Array(s);
+                    const yCoords = new Float32Array(s);
+                    for (let i = 0; i < s; i++) {
+                        const zx = (zGrid && zGrid.x) ? zGrid.x[i] : undefined;
+                        const zy = (zGrid && zGrid.y) ? zGrid.y[i] : undefined;
+                        xCoords[i] = Number((zx !== undefined && zx !== null) ? zx : ((i / (s - 1 || 1)) * 2 - 1));
+                        yCoords[i] = Number((zy !== undefined && zy !== null) ? zy : ((i / (s - 1 || 1)) * 2 - 1));
+                    }
+                    for (let iy = 0; iy < s; iy++) {
+                        if ((iy % 32) === 0) {
+                            throwIfCancelled(activeCancelToken);
+                            await new Promise(resolve => setTimeout(resolve, 0));
+                        }
+                        const row = zGrid.z[iy];
+                        for (let ix = 0; ix < s; ix++) {
+                            const vWaves = row ? row[ix] : undefined;
+                            if (vWaves === null || !isFinite(vWaves)) {
+                                maskGrid[iy][ix] = false;
+                                opdGrid[iy][ix] = 0;
+                                ampGrid[iy][ix] = 0;
+                                continue;
+                            }
+                            maskGrid[iy][ix] = true;
+                            opdGrid[iy][ix] = Number(vWaves) * Number(wavelength);
+                            ampGrid[iy][ix] = 1.0;
+                        }
+                    }
+
+                    const opdData = { gridSize: s, wavelength, gridData: { opd: opdGrid, amplitude: ampGrid, pupilMask: maskGrid, xCoords, yCoords } };
+                    let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
+                    let focalLengthMm = 100.0;
+                    try {
+                        const stopIndex = findStopSurfaceIndex(opticalSystemRows);
+                        const stopRow = (stopIndex >= 0 && opticalSystemRows && opticalSystemRows.length > stopIndex) ? opticalSystemRows[stopIndex] : null;
+                        const sdRaw =
+                            (stopRow && stopRow.semidia !== undefined && stopRow.semidia !== null) ? stopRow.semidia :
+                            (stopRow && stopRow.Semidia !== undefined && stopRow.Semidia !== null) ? stopRow.Semidia :
+                            (stopRow && stopRow['Semi Diameter'] !== undefined && stopRow['Semi Diameter'] !== null) ? stopRow['Semi Diameter'] :
+                            (stopRow && stopRow.aperture !== undefined && stopRow.aperture !== null) ? stopRow.aperture :
+                            (stopRow && stopRow.Aperture !== undefined && stopRow.Aperture !== null) ? stopRow.Aperture :
+                            NaN;
+                        const sd = Math.abs(parseFloat(sdRaw));
+                        if (Number.isFinite(sd) && sd > 0) {
+                            const isApertureField = stopRow && (stopRow.aperture !== undefined || stopRow.Aperture !== undefined);
+                            const stopRadiusMm = isApertureField ? (sd * 0.5) : sd;
+                            if (Number.isFinite(stopRadiusMm) && stopRadiusMm > 0) pupilDiameterMm = stopRadiusMm * 2;
+                        }
+                        const fl = calculateFocalLength(opticalSystemRows, wavelength);
+                        if (Number.isFinite(fl) && Math.abs(fl) > 1e-9 && fl !== Infinity) focalLengthMm = Math.abs(fl);
+                    } catch (_) {}
+
+                    if (!window.__popupPsfCalculator) window.__popupPsfCalculator = new PSFCalculator();
+                    const psfCalculator = window.__popupPsfCalculator;
+                    const psfResult = await raceWithCancel(psfCalculator.calculatePSF(opdData, {
+                        samplingSize: psfSamplingSize,
+                        pupilDiameter: pupilDiameterMm,
+                        focalLength: focalLengthMm,
+                        forceImplementation: forceWasm ? 'wasm' : null,
+                        removeTilt: false,
+                        onProgress: (evt) => {
+                            const p = Number(evt && evt.percent);
+                            const msg = (evt && evt.message) || (evt && evt.phase) || 'PSF...';
+                            const phase = (evt && evt.phase) ? evt.phase : 'psf';
+                            if (!Number.isFinite(p)) { onProgress({ percent: null, phase, message: msg }); return; }
+                            onProgress({ percent: 80 + 0.2 * p, phase, message: msg });
+                        }
+                    }), activeCancelToken);
+                    throwIfCancelled(activeCancelToken);
+
+                    const plotter = new PSFPlotter(containerEl);
+                    await plotter.plot2DPSF(psfResult, { logScale, title: 'Point Spread Function' });
+                } else {
+                    if (!window.opener || typeof window.opener.showPSFDiagram !== 'function') {
+                        throw new Error('showPSFDiagram is not available on opener');
+                    }
+                    await window.opener.showPSFDiagram('2d', Number.isFinite(sampling) ? sampling : 128, logScale, Number.isFinite(objectIndex) ? objectIndex : 0, {
+                        containerElement: containerEl,
+                        statsElement: document.getElementById('popup-psf-container-stats'),
+                        forceImplementation: forceWasm ? 'wasm' : null,
+                        zernikeFitSamplingSize: Number.isFinite(zernikeSampling) ? zernikeSampling : undefined,
+                        cancelToken: activeCancelToken,
+                        onProgress
+                    });
+                }
+
                 setProgress(100, 'Done');
                 resizePlot();
                 hideProgress();
@@ -3800,7 +4247,24 @@ export function setupOpticalSystemChangeListeners(scene) {
                 console.error(err);
                 setProgress(100, 'Failed');
                 if (containerEl) {
-                    containerEl.innerHTML = '<div style="padding:20px;color:red;font-family:Arial;">Failed to generate PSF. Check console.</div>';
+                    const msg = String((err && err.message) || err || 'Unknown error');
+                    const stack = String((err && err.stack) || '');
+                    const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (ch) => {
+                        switch (ch) {
+                            case '&': return '&amp;';
+                            case '<': return '&lt;';
+                            case '>': return '&gt;';
+                            case '"': return '&quot;';
+                            case "'": return '&#39;';
+                            default: return ch;
+                        }
+                    });
+                    const details = escapeHtml(msg + (stack ? '\\n\\n' + stack : ''));
+                    containerEl.innerHTML =
+                        '<div style="padding:20px;color:red;font-family:Arial;">' +
+                            '<div style="font-weight:bold;margin-bottom:8px;">Failed to generate PSF</div>' +
+                            '<pre style="white-space:pre-wrap;word-break:break-word;">' + details + '</pre>' +
+                        '</div>';
                 }
             } finally {
                 try {
@@ -3823,6 +4287,9 @@ export function setupOpticalSystemChangeListeners(scene) {
             syncObjectOptionsFromOpener();
             syncInputsFromOpener();
         }
+        // Expose for opener-triggered refresh when reusing an existing popup window.
+        window.syncAll = syncAll;
+        window.syncObjectOptionsFromOpener = syncObjectOptionsFromOpener;
         window.addEventListener('resize', resizePlot);
         window.addEventListener('focus', syncAll);
         syncAll();
@@ -3974,6 +4441,14 @@ export function setupOpticalSystemChangeListeners(scene) {
             try { return window.opener || null; } catch (_) { return null; }
         }
 
+        function getPrimaryWavelength() {
+            const opener = getOpener();
+            if (!opener) return null;
+            if (typeof opener.getPrimaryWavelength !== 'function') return null;
+            const v = Number(safeCall(() => opener.getPrimaryWavelength(), 0));
+            return Number.isFinite(v) && v > 0 ? v : null;
+        }
+
         function buildWavelengthOptions() {
             const opener = getOpener();
             if (!opener) return [];
@@ -3981,10 +4456,8 @@ export function setupOpticalSystemChangeListeners(scene) {
             const sources = (typeof getSourceRows === 'function')
                 ? safeCall(() => getSourceRows(opener.tableSource), [])
                 : [];
-            const primary = (typeof opener.getPrimaryWavelength === 'function')
-                ? (Number(safeCall(() => opener.getPrimaryWavelength(), 0)) || null)
-                : null;
-            const out = [];
+            const primary = getPrimaryWavelength();
+            const out = [{ value: 'all', label: 'All' }];
             if (Array.isArray(sources) && sources.length > 0) {
                 for (let i = 0; i < sources.length; i++) {
                     const wl = Number(sources[i]?.wavelength);
@@ -3996,7 +4469,7 @@ export function setupOpticalSystemChangeListeners(scene) {
                     out.push({ value: String(wl), label });
                 }
             }
-            if (out.length === 0) {
+            if (out.length === 1) {
                 out.push({ value: String(primary || 0.5876), label: (((primary || 0.5876) * 1000).toFixed(1) + ' nm') });
             }
             return out;
@@ -4017,7 +4490,7 @@ export function setupOpticalSystemChangeListeners(scene) {
                     const typeRaw = String(obj.position ?? obj.object ?? obj.Object ?? obj.objectType ?? 'Point');
                     const x = (obj.x ?? obj.xHeightAngle ?? 0);
                     const y = (obj.y ?? obj.yHeightAngle ?? 0);
-                    out.push({ value: String(i), label: (String(i) + ': ' + typeRaw + ' (' + x + ', ' + y + ')') });
+                    out.push({ value: String(i), label: (String(i + 1) + ': ' + typeRaw + ' (' + x + ', ' + y + ')') });
                 }
             }
             if (out.length === 0) out.push({ value: '0', label: '0' });
@@ -4040,7 +4513,19 @@ export function setupOpticalSystemChangeListeners(scene) {
         }
 
         function syncAllOptions() {
-            populateSelect(document.getElementById('popup-mtf-wavelength-select'), buildWavelengthOptions());
+            const wlSel = document.getElementById('popup-mtf-wavelength-select');
+            const prevWl = wlSel ? wlSel.value : '';
+            populateSelect(wlSel, buildWavelengthOptions());
+            // Default to Primary (not All) on first open.
+            if (wlSel && (!prevWl || !Array.from(wlSel.options).some(o => o.value === prevWl))) {
+                const primary = getPrimaryWavelength();
+                if (Number.isFinite(primary) && Array.from(wlSel.options).some(o => o.value === String(primary))) {
+                    wlSel.value = String(primary);
+                } else {
+                    const firstNumeric = Array.from(wlSel.options).find(o => o.value !== 'all');
+                    if (firstNumeric) wlSel.value = firstNumeric.value;
+                }
+            }
             populateSelect(document.getElementById('popup-mtf-object-select'), buildObjectOptions());
         }
 
@@ -4071,7 +4556,9 @@ export function setupOpticalSystemChangeListeners(scene) {
             const maxEl = document.getElementById('popup-mtf-max-freq-input');
             const samplingEl = document.getElementById('popup-mtf-sampling-select');
 
-            const wavelength = wlSel ? Number(wlSel.value) : 0.5876;
+            const wlValue = wlSel ? String(wlSel.value) : '';
+            const primary = getPrimaryWavelength();
+            const wavelength = (wlValue === 'all') ? 'all' : Number(wlValue);
             const objectIndex = objSel ? parseInt(objSel.value, 10) : 0;
             const maxFreq = maxEl ? Number(maxEl.value) : 100;
             const sampling = samplingEl ? Number(samplingEl.value) : 256;
@@ -4085,7 +4572,7 @@ export function setupOpticalSystemChangeListeners(scene) {
                 // Allow the popup to paint the progress UI before heavy computation begins.
                 await new Promise(r => setTimeout(r, 0));
                 await opener.showMTFDiagram({
-                    wavelengthMicrons: Number.isFinite(wavelength) ? wavelength : 0.5876,
+                    wavelengthMicrons: (wavelength === 'all') ? 'all' : (Number.isFinite(wavelength) ? wavelength : (primary || 0.5876)),
                     objectIndex: Number.isFinite(objectIndex) ? objectIndex : 0,
                     maxFrequencyLpmm: Number.isFinite(maxFreq) ? maxFreq : 100,
                     samplingSize: Number.isFinite(sampling) ? sampling : 256,

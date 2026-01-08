@@ -439,7 +439,7 @@
             <option value="4096">4096x4096</option>
           </select>
           <label>
-            <input type="checkbox" id="psf-log-scale-checkbox" checked>
+            <input type="checkbox" id="psf-log-scale-checkbox">
             Log scale
           </label>
           <label for="psf-performance-select">Calculator:</label>
@@ -499,7 +499,7 @@
       console.warn('⚠️ [Startup] Failed to pre-load active configuration:', e);
     }
   </script>
-  <script type="module" src="main.js?v=2026-01-07a"></script>
+  <script type="module" src="main.js?v=2026-01-08h"></script>
   
   <!-- Configuration System -->
   <script type="module" src="table-configuration.js"></script>
@@ -564,7 +564,7 @@
         // ray-tracing.jsの関数をグローバルに公開
         setTimeout(async () => {
           try {
-            const main = await import('./main.js?v=2026-01-07a');
+            const main = await import('./main.js?v=2026-01-08h');
             const rayTracing = await import('./ray-tracing.js');
             const debugUtils = await import('./debug/debug-utils.js');
             

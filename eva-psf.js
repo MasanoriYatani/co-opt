@@ -568,13 +568,23 @@ export class PSFCalculator {
                 samplingSize,
                 wavelength,
                 calculator: 'wasm-integrated',
-                pixelSize: this.calculatePixelSize(wavelength, 100.0, samplingSize),
+                pixelSize: this.calculatePixelSize(
+                    wavelength,
+                    (wasmResult.metadata?.focalLength ?? 100.0),
+                    (wasmResult.metadata?.pupilDiameter ?? 10.0),
+                    samplingSize
+                ),
                 method: 'wasm'
             },
             options: {
                 pupilDiameter: wasmResult.metadata?.pupilDiameter ?? 10.0,
                 focalLength: wasmResult.metadata?.focalLength ?? 100.0,
-                pixelSize: wasmResult.metadata?.pixelSize ?? this.calculatePixelSize(wavelength, 100.0, samplingSize)
+                pixelSize: wasmResult.metadata?.pixelSize ?? this.calculatePixelSize(
+                    wavelength,
+                    (wasmResult.metadata?.focalLength ?? 100.0),
+                    (wasmResult.metadata?.pupilDiameter ?? 10.0),
+                    samplingSize
+                )
             },
             // PSFCalculator互換フィールド
             rayCount: wasmResult.metadata?.rayCount || 0,
@@ -727,7 +737,7 @@ export class PSFCalculator {
         // 4. PSF評価指標を計算（計測）
         emitProgress(92, 'psf-metrics', 'Computing metrics...');
         const metricsStartTime = performance.now();
-        const usedPixelSize = pixelSize || this.calculatePixelSize(effectiveWavelength, focalLength, samplingSize);
+        const usedPixelSize = pixelSize || this.calculatePixelSize(effectiveWavelength, focalLength, pupilDiameter, samplingSize);
         const metrics = this.calculatePSFMetrics(psfData, {
             wavelength: effectiveWavelength,
             pupilDiameter,
@@ -1560,10 +1570,20 @@ export class PSFCalculator {
      * @param {number} samplingSize - サンプリングサイズ
      * @returns {number} ピクセルサイズ（μm）
      */
-    calculatePixelSize(wavelength, focalLength, samplingSize) {
-        // 回折限界スポットサイズから推定
-        const airy_radius = 1.22 * wavelength * focalLength / 10.0; // 瞳径10mmと仮定
-        return airy_radius / (samplingSize / 8); // 適当なスケーリング
+    calculatePixelSize(wavelength, focalLength, pupilDiameter, samplingSize) {
+        const wl = Number(wavelength);
+        const fl = Number(focalLength);
+        const pd = Number(pupilDiameter);
+
+        // Physical scaling for FFT PSF grid (focal plane sampling pitch).
+        // Δx (μm/px) ≈ λ(μm) * f(mm) / D(mm)
+        // Keep this independent of samplingSize so increasing N increases the plotted range.
+        const safePd = (Number.isFinite(pd) && pd > 0) ? pd : 10.0;
+        const safeFl = (Number.isFinite(fl) && Math.abs(fl) > 0) ? Math.abs(fl) : 100.0;
+        const safeWl = (Number.isFinite(wl) && wl > 0) ? wl : 0.5876;
+
+        void samplingSize; // retained for backward compatibility
+        return (safeWl * safeFl) / safePd;
     }
 
     /**
