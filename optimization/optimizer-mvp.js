@@ -35,9 +35,20 @@ function nextFrame() {
     }
   })();
 
+  const canUseRaf = (() => {
+    try {
+      if (typeof requestAnimationFrame !== 'function') return false;
+      // rAF can fully pause in background tabs/windows; fall back to timers there.
+      if (typeof document !== 'undefined' && document && document.hidden) return false;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  })();
+
   if (!prof) {
     return new Promise((resolve) => {
-      if (typeof requestAnimationFrame === 'function') {
+      if (canUseRaf) {
         requestAnimationFrame(() => resolve());
         return;
       }
@@ -61,7 +72,7 @@ function nextFrame() {
       resolve();
     };
 
-    if (typeof requestAnimationFrame === 'function') {
+    if (canUseRaf) {
       requestAnimationFrame(() => done());
       return;
     }
