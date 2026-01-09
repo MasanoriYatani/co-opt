@@ -6486,6 +6486,16 @@ function __blocks_setBlockParamValue(blockId, key, rawValue) {
     const b = activeCfg.blocks.find(x => x && String(x.blockId ?? '') === String(blockId));
     if (!b) return { ok: false, reason: `block not found: ${String(blockId)}` };
 
+    // If this key is marked as Shared (all configs), propagate the value edit across all configs.
+    // (Previously only numeric values were synced; string parameters like SurfType were not.)
+    try {
+        const vars = (b.variables && typeof b.variables === 'object') ? b.variables : null;
+        const entry = vars ? vars[String(key)] : null;
+        if (__blocks_getVarScope(entry) === 'global') {
+            return __blocks_setBlockParamValueAllConfigs(blockId, key, rawValue);
+        }
+    } catch (_) {}
+
     if (!b.parameters || typeof b.parameters !== 'object') b.parameters = {};
 
     const coerced = __blocks_coerceParamValue(String(b.blockType ?? ''), String(key ?? ''), rawValue);
