@@ -228,6 +228,7 @@ const ensurePopupMessageHandler = () => {
                         renderer: popupWindow.renderer,
                         includeRayStartMargin: true,
                         preserveDrawCrossBounds: userAdjustedView === true,
+                        preserveCurrentOrthoBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
                         ...(targetOverride ? { targetOverride } : {})
                     });
@@ -239,6 +240,7 @@ const ensurePopupMessageHandler = () => {
                         renderer: popupWindow.renderer,
                         includeRayStartMargin: true,
                         preserveDrawCrossBounds: userAdjustedView === true,
+                        preserveCurrentOrthoBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
                         ...(targetOverride ? { targetOverride } : {})
                     });
@@ -468,14 +470,38 @@ const ensurePopupMessageHandler = () => {
 
                         if (!cam || !ctr) return;
 
+                        const syncOrthoBoundsToRendererAspect = () => {
+                            try {
+                                if (!cam || !cam.isOrthographicCamera || !rnd || typeof rnd.getSize !== 'function') return;
+                                const size = rnd.getSize(new (popupWindow?.THREE?.Vector2 || window.THREE?.Vector2 || THREE.Vector2)());
+                                const w = Number(size?.x) || 0;
+                                const h = Number(size?.y) || 0;
+                                if (!Number.isFinite(w) || !Number.isFinite(h) || w < 2 || h < 2) return;
+                                const asp = w / h;
+
+                                const currentHeight = (cam.top - cam.bottom) || 1;
+                                const cx = (cam.left + cam.right) / 2;
+                                const cy = (cam.top + cam.bottom) / 2;
+                                const nextWidth = currentHeight * asp;
+
+                                cam.left = cx - nextWidth / 2;
+                                cam.right = cx + nextWidth / 2;
+                                cam.top = cy + currentHeight / 2;
+                                cam.bottom = cy - currentHeight / 2;
+                            } catch (_) {}
+                        };
+
                         const oldTarget = target || {
                             x: ctr.target?.x ?? 0,
                             y: ctr.target?.y ?? 0,
                             z: ctr.target?.z ?? 0
                         };
 
-                        // Determine current view axis from camera.up
-                        const currentAxis = (Math.abs(cam.up?.x ?? 0) > Math.abs(cam.up?.y ?? 0)) ? 'XZ' : 'YZ';
+                        // Determine current view axis from camera position relative to target.
+                        // (More reliable than camera.up after free OrbitControls rotation.)
+                        const curDx0 = (cam.position?.x ?? 0) - oldTarget.x;
+                        const curDy0 = (cam.position?.y ?? 0) - oldTarget.y;
+                        const currentAxis = (Math.abs(curDy0) > Math.abs(curDx0)) ? 'XZ' : 'YZ';
 
                         // When switching between YZ and XZ, the visible vertical axis changes (Y <-> X).
                         // If the user panned vertically in the previous view, keeping the same world
@@ -505,27 +531,31 @@ const ensurePopupMessageHandler = () => {
                         );
                         ctr.target.set(nextTarget.x, nextTarget.y, nextTarget.z);
 
+                        // IMPORTANT:
+                        // After the user freely rotates the 3D view, the camera can be tilted.
+                        // Rotating around Z only keeps that tilt, which visually distorts the
+                        // XZ/YZ cross-section (appears stretched). Snap the camera to the exact
+                        // axis-aligned cross-section view while preserving the user's pan.
                         const dx = (cam.position?.x ?? 0) - nextTarget.x;
                         const dy = (cam.position?.y ?? 0) - nextTarget.y;
-                        const rxy = Math.hypot(dx, dy) || 300;
-                        const currentTheta = Math.atan2(dy, dx);
-                        const desiredTheta = (viewAxis === 'XZ') ? (Math.PI / 2) : Math.PI; // XZ: +Y side, YZ: -X side
-                        const delta = desiredTheta - currentTheta;
-                        const cosA = Math.cos(delta);
-                        const sinA = Math.sin(delta);
-                        const rotatedDx = dx * cosA - dy * sinA;
-                        const rotatedDy = dx * sinA + dy * cosA;
+                        const dz = (cam.position?.z ?? 0) - nextTarget.z;
+                        const dist = Math.hypot(dx, dy, dz) || 300;
 
-                        // Rotate camera around Z about the (remapped) target.
-                        const norm = Math.hypot(rotatedDx, rotatedDy) || 1;
-                        cam.position.x = nextTarget.x + (rotatedDx / norm) * rxy;
-                        cam.position.y = nextTarget.y + (rotatedDy / norm) * rxy;
-
-                        if (viewAxis === 'XZ') cam.up.set(1, 0, 0);
-                        else cam.up.set(0, 1, 0);
+                        if (viewAxis === 'XZ') {
+                            cam.position.set(nextTarget.x, nextTarget.y + dist, nextTarget.z);
+                            cam.up.set(1, 0, 0);
+                        } else {
+                            cam.position.set(nextTarget.x - dist, nextTarget.y, nextTarget.z);
+                            cam.up.set(0, 1, 0);
+                        }
 
                         cam.lookAt(nextTarget.x, nextTarget.y, nextTarget.z);
                         ctr.update();
+
+                        // Ensure orthographic bounds match the actual canvas aspect.
+                        // Without this, the view can look stretched until a resize event happens.
+                        syncOrthoBoundsToRendererAspect();
+
                         cam.updateProjectionMatrix();
                         if (rnd && scn) rnd.render(scn, cam);
                     };
@@ -668,6 +698,25 @@ async function executeCrossSectionView({
     saveButtonState();
     
     try {
+        // Keep behavior consistent with popup draw-cross:
+        // always render using the canonical active configuration.
+        try {
+            if (typeof window.loadActiveConfigurationToTables === 'function') {
+                window.loadActiveConfigurationToTables();
+            } else if (typeof loadActiveConfigurationToTables === 'function') {
+                loadActiveConfigurationToTables();
+            }
+        } catch (e) {
+            console.warn('⚠️ [CrossSectionView] Unable to load active configuration:', e);
+        }
+
+        // Clear any transient override rows left behind by optimization/debug flows.
+        try {
+            if (typeof globalThis !== 'undefined') {
+                globalThis.__cooptOpticalSystemRowsOverride = null;
+            }
+        } catch (_) {}
+
         const opticalSystemRows = getOpticalSystemRows();
         if (!Array.isArray(opticalSystemRows) || opticalSystemRows.length === 0) {
             throw new Error('光学系データが設定されていません。');

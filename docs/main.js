@@ -934,6 +934,34 @@ function updateCameraViewBounds() {
 // グローバルに公開
 window.updateCameraViewBounds = updateCameraViewBounds;
 
+function expandOrthoBoundsToAspect(camera, aspect) {
+    if (!camera?.isOrthographicCamera) return;
+    if (!Number.isFinite(aspect) || aspect <= 0) return;
+
+    const width = camera.right - camera.left;
+    const height = camera.top - camera.bottom;
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return;
+
+    const currentAspect = width / height;
+    if (!Number.isFinite(currentAspect) || currentAspect <= 0) return;
+    if (Math.abs(currentAspect - aspect) < 1e-6) return;
+
+    const centerX = (camera.left + camera.right) / 2;
+    const centerY = (camera.top + camera.bottom) / 2;
+
+    if (currentAspect < aspect) {
+        // Canvas is wider than current bounds -> expand width
+        const newWidth = height * aspect;
+        camera.left = centerX - newWidth / 2;
+        camera.right = centerX + newWidth / 2;
+    } else {
+        // Canvas is taller than current bounds -> expand height
+        const newHeight = width / aspect;
+        camera.top = centerY + newHeight / 2;
+        camera.bottom = centerY - newHeight / 2;
+    }
+}
+
 /**
  * Set camera for Y-Z cross section front view (for Draw Cross)
  */
@@ -995,11 +1023,18 @@ function setCameraForYZCrossSection(options = {}) {
         
         // OrthographicCameraの場合、視野範囲を直接設定
         if (camera.isOrthographicCamera) {
-            if (preserveDrawCrossBounds) {
+            const preserveCurrentOrthoBounds = options.preserveCurrentOrthoBounds === true;
+            if (preserveCurrentOrthoBounds) {
+                // User already adjusted the view (pan/zoom/rotate).
+                // Keep the current bounds so pressing Render does not change the scale.
+                expandOrthoBoundsToAspect(camera, aspect);
+                console.log('📷 Preserving current orthographic bounds (YZ)');
+            } else if (preserveDrawCrossBounds) {
                 camera.left = savedBounds.left;
                 camera.right = savedBounds.right;
                 camera.top = savedBounds.top;
                 camera.bottom = savedBounds.bottom;
+                expandOrthoBoundsToAspect(camera, aspect);
                 console.log('📷 Using preserved Draw Cross orthographic bounds (YZ)');
             } else {
                 // アスペクト比に基づいて、どちらの方向を基準にするか決定
@@ -1130,11 +1165,16 @@ function setCameraForXZCrossSection(options = {}) {
         const visibleWidth = effectiveTotalLength * marginFactor;
 
         if (camera.isOrthographicCamera) {
-            if (preserveDrawCrossBounds) {
+            const preserveCurrentOrthoBounds = options.preserveCurrentOrthoBounds === true;
+            if (preserveCurrentOrthoBounds) {
+                expandOrthoBoundsToAspect(camera, aspect);
+                console.log('📷 [XZ] Preserving current orthographic bounds');
+            } else if (preserveDrawCrossBounds) {
                 camera.left = savedBounds.left;
                 camera.right = savedBounds.right;
                 camera.top = savedBounds.top;
                 camera.bottom = savedBounds.bottom;
+                expandOrthoBoundsToAspect(camera, aspect);
                 console.log('📷 [XZ] Using preserved Draw Cross orthographic bounds');
             } else {
                 let viewHeight, viewWidth;
