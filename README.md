@@ -1,21 +1,32 @@
+# co-opt (Collaborative Optical Tool)
 
-## Collaborative Optical Tool
+`co-opt` is a web-based application designed to visualize and prototype optical systems. It provides an intuitive interface to manage lens parameters and evaluate optical configurations in the browser.
 
-## Overview
-co-opt is a web-based application designed to visualize optical systems based on lens design data. Users can manage lens parameters through a table interface and see graphical representations of the optical components and their relationships.
+## 🚀 Overview
+The goal of `co-opt` is to make optical design more accessible and collaborative. Unlike traditional proprietary software, `co-opt` runs entirely in the browser and uses an open data format, making it easy to share and iterate on designs.
 
+## 🛠 Hackable JSON Data Format
+One of the core philosophies of `co-opt` is its **"Hackability."** All optical systems are handled as simple **JSON files**. This design choice provides several advantages for engineers:
+- **Version Control:** Since designs are plain text, you can easily track changes and manage your lens configurations using **Git**.
+- **Script Integration:** You can programmatically generate, modify, or analyze lens data using your favorite languages like **Python** or **JavaScript**.
+- **Portability:** Effortlessly share configurations by simply copying the JSON string or sharing a URL.
 
-## Usage
-Open `https://yassan8.github.io/co-opt/` in a web browser to launch the application.
-Use the interface to add, delete, and modify lens parameters in the table.
+## 🕹 Usage
+1. Open [https://yassan8.github.io/co-opt/](https://yassan8.github.io/co-opt/) in a web browser.
+2. **Note:** If you don't see any data on startup, click the **"Clear Cache"** button to load the default sample lens data.
+3. Use the table interface to add, delete, and modify lens parameters (radius, thickness, material, etc.) and visualize the resulting light paths.
 
-## Features
-- Add and delete lens blocks.
-- Modify lens parameters such as radius, thickness, and material.
-- Visual representation of the optical system based on the lens data.
+## ✨ Features
+- **Dynamic Lens Management:** Add and delete lens blocks as needed.
+- **Parameter Control:** Modify curvature, thickness, and glass materials via a table interface.
+- **Ray Tracing Visualization:** Visual representation of light paths based on the current lens data.
+- **Optimization:** Includes a basic solver to refine lens parameters.
 
-## Contributing
-Contributions are welcome! Please submit a pull request or open an issue for any enhancements or bug fixes.
+## 🤝 Contributing
+Contributions are welcome! Whether it's adding more glass data, improving the ray tracing engine, or enhancing the UI, please feel free to:
+1. Submit a **Pull Request**.
+2. Open an **Issue** for bug reports or feature requests.
+3. Join the discussion in the **GitHub Discussions** tab.
 
-## License
+## 📄 License
 This project is licensed under the MIT License.
