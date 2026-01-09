@@ -18,6 +18,7 @@ import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlock
 import { calculateBackFocalLength, calculateImageDistance, calculateFocalLength, calculateParaxialData, findStopSurfaceIndex } from '../ray-paraxial.js';
 import { getGlassDataWithSellmeier, findSimilarGlassesByNdVd, findSimilarGlassNames } from '../glass.js';
 import { normalizeDesign } from '../normalize-design.js';
+import { generateZMXText, downloadZMX } from '../zemax-export.js';
 
 function derivePupilAndFocalLengthMmFromParaxial(opticalSystemRows, wavelengthMicrons, preferEntrancePupil) {
     let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
@@ -393,6 +394,43 @@ function setupSaveButton() {
             console.log('✅ データが保存されました:', filename);
         });
     }
+}
+
+/**
+ * Export Zemax (.zmx) for the current optical system.
+ */
+function setupExportZemaxButton() {
+    const exportBtn = document.getElementById('export-zemax-btn');
+    if (!exportBtn) return;
+
+    exportBtn.addEventListener('click', () => {
+        if (document.activeElement) document.activeElement.blur();
+
+        // Default name based on last loaded filename.
+        const loadedFileName = localStorage.getItem('loadedFileName');
+        let defaultName = 'co-opt-export';
+        if (loadedFileName) {
+            defaultName = loadedFileName.replace(/\.(json|zmx)$/i, '');
+        }
+
+        let filename = prompt('Export Zemax file name (".zmx" will be added automatically)', defaultName);
+        if (!filename) return;
+        filename = String(filename).trim();
+        if (!filename) return;
+
+        try {
+            const rows = getOpticalSystemRows(window.tableOpticalSystem || tableOpticalSystem);
+            const zmxText = generateZMXText(rows, {
+                title: filename,
+                units: 'MM'
+            });
+            downloadZMX(zmxText, filename);
+            console.log('✅ [ZemaxExport] Exported .zmx:', filename);
+        } catch (e) {
+            console.warn('❌ [ZemaxExport] Export failed:', e);
+            alert(e?.message || 'Zemax export failed');
+        }
+    });
 }
 
 function setupSuggestOptimizeButtons() {
@@ -3911,6 +3949,7 @@ export function setupDOMEventHandlers() {
         // UIイベントハンドラーを設定
         setupSaveButton();
         setupLoadButton();
+        setupExportZemaxButton();
         setupClearStorageButton();
         setupSuggestOptimizeButtons();
         setupApplyToDesignIntentButton();
