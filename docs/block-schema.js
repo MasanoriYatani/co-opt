@@ -21,7 +21,11 @@ function normalizeSurfTypeValue(value) {
   const key = s.replace(/\s+/g, '').replace(/[_-]+/g, '').toLowerCase();
 
   // Zemax/CodeV style
-  if (key === 'standard' || key === 'spherical' || key === 'sphere' || key === 'std') return '';
+  // IMPORTANT:
+  // - '' means "unspecified/default" and may be inferred from non-zero asphere params.
+  // - 'Spherical' is an explicit choice and MUST override any leftover conic/coefs.
+  if (key === 'standard' || key === 'std') return '';
+  if (key === 'spherical' || key === 'sphere' || key === 'sph') return 'Spherical';
   if (key === 'asphericaleven' || key === 'asphericeven' || key === 'evenasphere' || key === 'evenaspheric') return 'Aspheric even';
   if (key === 'asphericalodd' || key === 'asphericodd' || key === 'oddasphere' || key === 'oddaspheric') return 'Aspheric odd';
 

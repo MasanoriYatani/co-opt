@@ -2601,12 +2601,60 @@ async function handlePSFCalculation(debugMode = false) {
     
     console.log(`🔬 PSFパラメータ: wavelength=${wavelength}, psfSampling=${psfSamplingSize}, fitGrid=${zernikeFitSamplingSize}, debugMode=${debugMode}`);
     
+    const getActiveConfigLabel = () => {
+        try {
+            if (typeof localStorage === 'undefined') return '';
+            const raw = localStorage.getItem('systemConfigurations');
+            if (!raw) return '';
+            const sys = JSON.parse(raw);
+            const activeId = sys?.activeConfigId;
+            const cfg = Array.isArray(sys?.configurations)
+                ? sys.configurations.find(c => String(c?.id) === String(activeId))
+                : null;
+            if (!cfg) return activeId !== undefined && activeId !== null ? `id=${activeId}` : '';
+            return `id=${cfg.id} name=${cfg.name || ''}`.trim();
+        } catch (_) {
+            return '';
+        }
+    };
+
+    const calcFNV1a32 = (str) => {
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < str.length; i++) {
+            hash ^= str.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193);
+        }
+        return (hash >>> 0).toString(16);
+    };
+
+    const summarizeOpticalSystemRows = (rows) => {
+        if (!Array.isArray(rows) || rows.length === 0) return { checksum: '0' };
+        const parts = [];
+        for (const r of rows) {
+            if (!r) continue;
+            const obj = r['object type'] ?? r.object ?? r.Object ?? '';
+            const radius = r.radius ?? r.Radius ?? '';
+            const thickness = r.thickness ?? r.Thickness ?? '';
+            const material = r.material ?? r.Material ?? '';
+            const semidia = r.semidia ?? r.semidiameter ?? r.SemiDia ?? '';
+            const id = r.id ?? '';
+            parts.push(`${id}|${obj}|${radius}|${thickness}|${material}|${semidia}`);
+        }
+        return { checksum: calcFNV1a32(parts.join(';')) };
+    };
+
     // 光学系データを取得
     const opticalSystemRows = getOpticalSystemRows();
     if (!opticalSystemRows || opticalSystemRows.length === 0) {
         alert('光学系データが見つかりません。まず光学系を設定してください。');
         return;
     }
+
+    // Always emit a compact identity line so it's obvious which config/data PSF used.
+    try {
+        const summary = summarizeOpticalSystemRows(opticalSystemRows);
+        console.log(`🧾 [PSF] activeConfig=${getActiveConfigLabel() || '(none)'} rows=${opticalSystemRows.length} checksum=${summary.checksum}`);
+    } catch (_) {}
     
     // Install cancel token for this run (Stop button)
     const cancelToken = createCancelToken();
@@ -6442,6 +6490,37 @@ function __blocks_setBlockParamValue(blockId, key, rawValue) {
 
     const coerced = __blocks_coerceParamValue(String(b.blockType ?? ''), String(key ?? ''), rawValue);
     b.parameters[String(key)] = coerced;
+
+    // If SurfType was explicitly set to Spherical, auto-clear any leftover asphere params.
+    // This prevents a mismatch where "Spherical" is selected but non-zero conic/coefs
+    // would otherwise keep the surface aspheric via inference.
+    try {
+        const k = String(key ?? '');
+        const isSurfTypeKey = /surftype$/i.test(k);
+        const v = String(coerced ?? '').trim();
+        const isExplicitSpherical = /^spherical$/i.test(v);
+        if (isSurfTypeKey && isExplicitSpherical) {
+            /** @type {string|null} */
+            let conicKey = null;
+            /** @type {string|null} */
+            let coefPrefix = null;
+
+            if (k === 'frontSurfType') { conicKey = 'frontConic'; coefPrefix = 'frontCoef'; }
+            else if (k === 'backSurfType') { conicKey = 'backConic'; coefPrefix = 'backCoef'; }
+            else {
+                const m = /^surf(\d+)SurfType$/i.exec(k);
+                if (m) {
+                    conicKey = `surf${m[1]}Conic`;
+                    coefPrefix = `surf${m[1]}Coef`;
+                }
+            }
+
+            if (conicKey) b.parameters[conicKey] = 0;
+            if (coefPrefix) {
+                for (let i = 1; i <= 10; i++) b.parameters[`${coefPrefix}${i}`] = 0;
+            }
+        }
+    } catch (_) {}
 
     // Basic validation: don't persist obviously invalid Stop.semiDiameter
     if (String(b.blockType ?? '') === 'Stop' && String(key) === 'semiDiameter') {

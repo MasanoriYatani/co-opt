@@ -4120,6 +4120,48 @@ export function setupOpticalSystemChangeListeners(scene) {
                         wavelength
                     };
 
+                    const getActiveConfigLabel = () => {
+                        try {
+                            if (typeof localStorage === 'undefined') return '';
+                            const raw = localStorage.getItem('systemConfigurations');
+                            if (!raw) return '';
+                            const sys = JSON.parse(raw);
+                            const activeId = sys?.activeConfigId;
+                            const cfg = Array.isArray(sys?.configurations)
+                                ? sys.configurations.find(c => String(c?.id) === String(activeId))
+                                : null;
+                            if (!cfg) return (activeId !== undefined && activeId !== null) ? ('id=' + activeId) : '';
+                            return ('id=' + cfg.id + ' name=' + (cfg.name || '')).trim();
+                        } catch (_) {
+                            return '';
+                        }
+                    };
+
+                    const calcFNV1a32 = (str) => {
+                        let hash = 0x811c9dc5;
+                        for (let i = 0; i < str.length; i++) {
+                            hash ^= str.charCodeAt(i);
+                            hash = Math.imul(hash, 0x01000193);
+                        }
+                        return (hash >>> 0).toString(16);
+                    };
+
+                    const summarizeOpticalSystemRows = (rows) => {
+                        if (!Array.isArray(rows) || rows.length === 0) return { checksum: '0' };
+                        const parts = [];
+                        for (const r of rows) {
+                            if (!r) continue;
+                            const obj = r['object type'] ?? r.object ?? r.Object ?? '';
+                            const radius = r.radius ?? r.Radius ?? '';
+                            const thickness = r.thickness ?? r.Thickness ?? '';
+                            const material = r.material ?? r.Material ?? '';
+                            const semidia = r.semidia ?? r.semidiameter ?? r.SemiDia ?? '';
+                            const id = r.id ?? '';
+                            parts.push(String(id) + '|' + String(obj) + '|' + String(radius) + '|' + String(thickness) + '|' + String(material) + '|' + String(semidia));
+                        }
+                        return { checksum: calcFNV1a32(parts.join(';')) };
+                    };
+
                     // Mirror the main window's PSF trace line to confirm field-setting changes.
                     try {
                         const fa = (fieldSetting && fieldSetting.fieldAngle && typeof fieldSetting.fieldAngle === 'object')
@@ -4136,6 +4178,37 @@ export function setupOpticalSystemChangeListeners(scene) {
                             }
                         } catch (_) {}
                     } catch (_) {}
+
+                    // Always emit identity line in the popup console too.
+                    // This helps confirm which config/rows the popup actually used.
+                    try {
+                        const summary = summarizeOpticalSystemRows(opticalSystemRows);
+                        const idLine = '🧾 [PSF popup] activeConfig=' + (getActiveConfigLabel() || '(none)') +
+                            ' rows=' + (Array.isArray(opticalSystemRows) ? opticalSystemRows.length : 0) +
+                            ' checksum=' + (summary && summary.checksum ? summary.checksum : '0');
+                        console.log(idLine);
+                        try {
+                            if (window.opener && window.opener.console && typeof window.opener.console.log === 'function') {
+                                window.opener.console.log(idLine);
+                            }
+                        } catch (_) {}
+                    } catch (_) {}
+
+                    // Also log PSF physical scale inputs (pupil diameter / focal length) once available.
+                    // This is critical when the plot auto-normalizes intensity and hides differences.
+                    const logScaleInputs = (pupilDiameterMm, focalLengthMm, stopIndex) => {
+                        try {
+                            const line = '📏 [PSF popup] pupilDiameterMm=' + (Number(pupilDiameterMm) || 0) +
+                                ' focalLengthMm=' + (Number(focalLengthMm) || 0) +
+                                ' stopIndex=' + (Number.isFinite(Number(stopIndex)) ? Number(stopIndex) : -1);
+                            console.log(line);
+                            try {
+                                if (window.opener && window.opener.console && typeof window.opener.console.log === 'function') {
+                                    window.opener.console.log(line);
+                                }
+                            } catch (_) {}
+                        } catch (_) {}
+                    };
 
                     const opdCalculator = createOPDCalculator(opticalSystemRows, wavelength);
                     const analyzer = new WavefrontAberrationAnalyzer(opdCalculator);
@@ -4219,8 +4292,10 @@ export function setupOpticalSystemChangeListeners(scene) {
                     const opdData = { gridSize: s, wavelength, gridData: { opd: opdGrid, amplitude: ampGrid, pupilMask: maskGrid, xCoords, yCoords } };
                     let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
                     let focalLengthMm = 100.0;
+                    let stopIndexForLog = -1;
                     try {
                         const stopIndex = findStopSurfaceIndex(opticalSystemRows);
+                        stopIndexForLog = stopIndex;
                         const stopRow = (stopIndex >= 0 && opticalSystemRows && opticalSystemRows.length > stopIndex) ? opticalSystemRows[stopIndex] : null;
                         const sdRaw =
                             (stopRow && stopRow.semidia !== undefined && stopRow.semidia !== null) ? stopRow.semidia :
@@ -4238,6 +4313,9 @@ export function setupOpticalSystemChangeListeners(scene) {
                         const fl = calculateFocalLength(opticalSystemRows, wavelength);
                         if (Number.isFinite(fl) && Math.abs(fl) > 1e-9 && fl !== Infinity) focalLengthMm = Math.abs(fl);
                     } catch (_) {}
+
+                    // Emit scale inputs after we compute them.
+                    logScaleInputs(pupilDiameterMm, focalLengthMm, stopIndexForLog);
 
                     if (!window.__popupPsfCalculator) window.__popupPsfCalculator = new PSFCalculator();
                     const psfCalculator = window.__popupPsfCalculator;

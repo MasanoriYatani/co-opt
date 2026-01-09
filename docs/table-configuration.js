@@ -11,6 +11,10 @@ const cfgWarn = (...args) => { if (CONFIG_DEBUG) console.warn(...args); };
 
 let warnedActiveConfigNotFound = false;
 
+function idsEqual(a, b) {
+  return String(a ?? '') === String(b ?? '');
+}
+
 // 初期Configuration構造
 function createDefaultConfiguration(id, name) {
   const defaultBlocks = [
@@ -118,7 +122,7 @@ export function saveSystemConfigurations(systemConfig) {
 // アクティブなConfigurationを取得
 export function getActiveConfiguration() {
   const systemConfig = loadSystemConfigurations();
-  const activeConfig = systemConfig.configurations.find(c => c.id === systemConfig.activeConfigId);
+  const activeConfig = systemConfig.configurations.find(c => idsEqual(c?.id, systemConfig.activeConfigId));
   
   if (!activeConfig) {
     if (!warnedActiveConfigNotFound) {
@@ -140,14 +144,15 @@ export function getActiveConfigId() {
 // アクティブなConfigurationを変更
 export function setActiveConfiguration(configId) {
   const systemConfig = loadSystemConfigurations();
-  const config = systemConfig.configurations.find(c => c.id === configId);
+  const config = systemConfig.configurations.find(c => idsEqual(c?.id, configId));
   
   if (!config) {
     console.error('❌ [Configuration] Config not found:', configId);
     return false;
   }
   
-  systemConfig.activeConfigId = configId;
+  // Preserve the config's id type (string/number) to avoid strict-equality mismatches.
+  systemConfig.activeConfigId = config.id;
   saveSystemConfigurations(systemConfig);
   cfgLog(`✅ [Configuration] Active config changed to: ${config.name}`);
   return true;
@@ -206,7 +211,7 @@ export async function loadActiveConfigurationToTables(options = {}) {
   // IMPORTANT: Use the active config object from this `systemConfig` instance.
   // Calling getActiveConfiguration() would reload from localStorage and return a different object,
   // so in-place mutations (e.g. auto-assigning blockId) would not persist when saving.
-  const activeConfig = systemConfig.configurations.find(c => c.id === systemConfig.activeConfigId) || systemConfig.configurations[0];
+  const activeConfig = systemConfig.configurations.find(c => idsEqual(c?.id, systemConfig.activeConfigId)) || systemConfig.configurations[0];
   
   if (!activeConfig) {
     console.error('❌ [Configuration] No active config found');
@@ -511,7 +516,7 @@ export function deleteConfiguration(configId) {
     return false;
   }
   
-  const index = systemConfig.configurations.findIndex(c => c.id === configId);
+  const index = systemConfig.configurations.findIndex(c => idsEqual(c?.id, configId));
   
   if (index === -1) {
     console.error('❌ [Configuration] Config not found:', configId);
@@ -522,7 +527,7 @@ export function deleteConfiguration(configId) {
   systemConfig.configurations.splice(index, 1);
   
   // アクティブなConfigurationが削除された場合、最初のConfigurationをアクティブに
-  if (systemConfig.activeConfigId === configId) {
+  if (idsEqual(systemConfig.activeConfigId, configId)) {
     systemConfig.activeConfigId = systemConfig.configurations[0].id;
     cfgLog(`🔄 [Configuration] Active config changed to: ${systemConfig.configurations[0].name}`);
   }
