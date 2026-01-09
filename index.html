@@ -558,6 +558,63 @@
   </script>
   <script src="psf-wasm.js"></script>
 
+  <script>
+    // Warn (in English) when the user tries to leave via the browser Back button.
+    // Note: Modern browsers may ignore custom beforeunload text; popstate uses confirm().
+    (() => {
+      if (globalThis.__cooptBackWarningInstalled) return;
+      globalThis.__cooptBackWarningInstalled = true;
+
+      const message = 'Leave this page? Unsaved changes may be lost.';
+      let armed = false;
+      let allowNavigation = false;
+
+      try {
+        history.pushState({ __cooptBackGuard: true, t: Date.now() }, '', location.href);
+        armed = true;
+      } catch (_) {
+        armed = false;
+      }
+
+      window.addEventListener('popstate', () => {
+        if (!armed) return;
+        if (allowNavigation) return;
+
+        const ok = window.confirm(message);
+        if (ok) {
+          allowNavigation = true;
+          // We consumed one history step (the guard). Go back once more.
+          setTimeout(() => {
+            try {
+              history.back();
+            } catch (_) {
+              // ignore
+            }
+          }, 0);
+          return;
+        }
+
+        // Stay on the page: re-arm guard.
+        try {
+          history.pushState({ __cooptBackGuard: true, t: Date.now() }, '', location.href);
+        } catch (_) {
+          // ignore
+        }
+      });
+
+      // Handle refresh/close/navigation away.
+      window.addEventListener('beforeunload', (e) => {
+        try {
+          e.preventDefault();
+          e.returnValue = message;
+          return message;
+        } catch (_) {
+          // ignore
+        }
+      });
+    })();
+  </script>
+
   <!-- Core functionality scripts -->
   <script>
     
