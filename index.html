@@ -84,15 +84,20 @@
       });
 
       // Handle refresh/close/navigation away.
-      window.addEventListener('beforeunload', (e) => {
+      const onBeforeUnload = (e) => {
+        if (allowNavigation) return;
         try {
           e.preventDefault();
-          e.returnValue = message;
-          return message;
+          // Safari/Chromium: custom text is typically ignored; empty string is the most compatible.
+          e.returnValue = '';
+          return '';
         } catch (_) {
           // ignore
         }
-      });
+      };
+      window.addEventListener('beforeunload', onBeforeUnload, { capture: true });
+      // Some Safari versions behave more reliably with the legacy handler.
+      window.onbeforeunload = onBeforeUnload;
     })();
   </script>
 
