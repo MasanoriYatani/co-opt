@@ -7096,9 +7096,9 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                 const mode = normalizeAsphereMode(surfTypeValue);
                 if (!mode) return String(fallback ?? '');
                 // IMPORTANT: Match ray-tracing.js coefficient convention.
-                // - even: coef1..10 multiply r^2, r^4, ..., r^20  -> A2..A20
+                // - even: coef1..10 multiply r^4, r^6, ..., r^22  -> A4..A22
                 // - odd:  coef1..10 multiply r^3, r^5, ..., r^21  -> A3..A21
-                const a = (mode === 'even') ? (2 * coefIndex) : (2 * coefIndex + 1);
+                const a = (mode === 'even') ? (2 * (coefIndex + 1)) : (2 * coefIndex + 1);
                 return `${String(prefix)} coefA${a}`;
             };
 

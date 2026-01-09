@@ -373,7 +373,8 @@ function __asphericSag_impl(r, params, mode = "even") {
   
   if (mode === "even") {
     // Math.pow()を使わずに逐次乗算でr^(2n)を計算
-    let r_power = r2; // r^2
+    // IMPORTANT: even-mode coefficients are A4..A22 (r^4..r^22)
+    let r_power = r2 * r2; // r^4
     for (let i = 0; i < coefs.length; i++) {
       if (coefs[i] !== 0) {
         asphere += coefs[i] * r_power;
@@ -663,10 +664,11 @@ function __intersectAsphericSurface_impl(ray, params, mode = "even", maxIter = 2
             dzdr_asp = 3 * coef1 * Math.pow(r, 2) + 5 * coef2 * Math.pow(r, 4) + 7 * coef3 * Math.pow(r, 6) +
               9 * coef4 * Math.pow(r, 8) + 11 * coef5 * Math.pow(r, 10);
           } else {
-            dzdr_asp = 2 * coef1 * r + 4 * coef2 * Math.pow(r, 3) + 6 * coef3 * Math.pow(r, 5) +
-              8 * coef4 * Math.pow(r, 7) + 10 * coef5 * Math.pow(r, 9) + 12 * coef6 * Math.pow(r, 11) +
-              14 * coef7 * Math.pow(r, 13) + 16 * coef8 * Math.pow(r, 15) + 18 * coef9 * Math.pow(r, 17) +
-              20 * coef10 * Math.pow(r, 19);
+            // even-mode coefficients are A4..A22 (r^4..r^22)
+            dzdr_asp = 4 * coef1 * Math.pow(r, 3) + 6 * coef2 * Math.pow(r, 5) + 8 * coef3 * Math.pow(r, 7) +
+              10 * coef4 * Math.pow(r, 9) + 12 * coef5 * Math.pow(r, 11) + 14 * coef6 * Math.pow(r, 13) +
+              16 * coef7 * Math.pow(r, 15) + 18 * coef8 * Math.pow(r, 17) + 20 * coef9 * Math.pow(r, 19) +
+              22 * coef10 * Math.pow(r, 21);
           }
           dzdr += dzdr_asp;
         }
@@ -784,10 +786,11 @@ function __asphericSagDerivative_impl(r, params, mode = "even") {
   
   if (mode === "even") {
     // Math.pow()を使わずに逐次乗算でr^(2n-1)を計算
-    let r_power = r; // r^1
+    // even-mode coefficients are A4..A22 (r^4..r^22)
+    let r_power = r2 * r; // r^3
     for (let i = 0; i < coefs.length; i++) {
       if (coefs[i] !== 0) {
-        const power = 2 * (i + 1); // r^2, r^4, r^6, ...の指数
+        const power = 2 * (i + 2); // r^4, r^6, r^8, ...の指数
         dzdr += coefs[i] * power * r_power; // d/dr[ar^n] = n*a*r^(n-1)
       }
       r_power *= r2; // r^1 → r^3 → r^5 → r^7 → ...

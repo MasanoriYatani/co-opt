@@ -77,24 +77,21 @@ export function asphericSurfaceZ(r, params, mode = "even") {
         const c = 1 / radius;
         const k = Number(conic) || 0;
         // IMPORTANT: align coefficient convention with ray-tracing.js
-        // even: coef1..10 => A2..A20 (r^2..r^20)
-        // The WASM entrypoint takes A4..A22 only, so we map coef2..10 => A4..A20 and add A2 (coef1) in JS.
-        const a2 = Number(coef1) || 0;
-        const a4 = Number(coef2) || 0;
-        const a6 = Number(coef3) || 0;
-        const a8 = Number(coef4) || 0;
-        const a10 = Number(coef5) || 0;
-        const a12 = Number(coef6) || 0;
-        const a14 = Number(coef7) || 0;
-        const a16 = Number(coef8) || 0;
-        const a18 = Number(coef9) || 0;
-        const a20 = Number(coef10) || 0;
-        const a22 = 0;
+        // even: coef1..10 => A4..A22 (r^4..r^22)
+        // The WASM entrypoint takes A4..A22, so this is a direct mapping.
+        const a4 = Number(coef1) || 0;
+        const a6 = Number(coef2) || 0;
+        const a8 = Number(coef3) || 0;
+        const a10 = Number(coef4) || 0;
+        const a12 = Number(coef5) || 0;
+        const a14 = Number(coef6) || 0;
+        const a16 = Number(coef7) || 0;
+        const a18 = Number(coef8) || 0;
+        const a20 = Number(coef9) || 0;
+        const a22 = Number(coef10) || 0;
         const out = wasmSystem.forceAsphericSag(Number(r), c, k, a4, a6, a8, a10, a12, a14, a16, a18, a20, a22);
         if (isFinite(out)) {
-          const rr = Number(r);
-          const r2 = rr * rr;
-          return out + (a2 ? (a2 * r2) : 0);
+          return out;
         }
       }
     }
@@ -130,8 +127,8 @@ export function asphericSurfaceZ(r, params, mode = "even") {
   const coefs = [coef1, coef2, coef3, coef4, coef5, coef6, coef7, coef8, coef9, coef10];
   for (let i = 0; i < coefs.length; i++) {
     if (mode === "even") {
-      // Align with ray-tracing.js: coef1 corresponds to r^2.
-      asphere += (coefs[i] || 0) * Math.pow(r, 2 * (i + 1));
+      // Align with ray-tracing.js: coef1 corresponds to r^4.
+      asphere += (coefs[i] || 0) * Math.pow(r, 2 * (i + 2));
     } else if (mode === "odd") {
       // Align with ray-tracing.js: coef1 corresponds to r^3.
       asphere += (coefs[i] || 0) * Math.pow(r, 2 * (i + 1) + 1);

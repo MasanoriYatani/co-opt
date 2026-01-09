@@ -25,7 +25,8 @@ static inline double __rt10_asphere_poly(double r, double r2,
             r_power *= r2;
         }
     } else {
-        double r_power = r2; // r^2
+        // even: coef1..coef10 multiply r^4, r^6, ..., r^22 (A4..A22)
+        double r_power = r2 * r2; // r^4
         for (int i = 0; i < 10; i++) {
             double c = coefs[i];
             if (c != 0.0) asphere += c * r_power;
@@ -55,16 +56,16 @@ static inline double __rt10_asphere_dzdr(double r, double r2,
             r_pow *= r2; // r^2 -> r^4 -> ... -> r^20
         }
     } else {
-        // sag = sum coef_i * r^(2i) for i=1..10 (r^2..r^20)
-        // dz/dr = sum coef_i * (2i) * r^(2i-1)
-        double r_pow = r; // r^1
+        // sag = sum coef_i * r^(2i+2) for i=1..10 (r^4..r^22)
+        // dz/dr = sum coef_i * (2i+2) * r^(2i+1)
+        double r_pow = r2 * r; // r^3
         for (int i = 0; i < 10; i++) {
             double c = coefs[i];
             if (c != 0.0) {
-                double p = (double)(2 * (i + 1)); // 2,4,...,20
+                double p = (double)(2 * (i + 2)); // 4,6,...,22
                 dz += c * p * r_pow;
             }
-            r_pow *= r2; // r -> r^3 -> ... -> r^19
+            r_pow *= r2; // r^3 -> r^5 -> ... -> r^21
         }
     }
     return dz;
@@ -278,7 +279,9 @@ void batch_aspheric_sag10(double* r_array, int count, double c, double k,
 }
 
 /**
- * ray-tracing.js互換の非球面SAG計算（coef1*r^2 + coef2*r^4 + ...）
+ * ray-tracing.js互換の非球面SAG計算
+ * - even: coef1*r^4 + coef2*r^6 + ... + coef10*r^22
+ * - odd:  coef1*r^3 + coef2*r^5 + ... + coef10*r^21
  *
  * NOTE:
  * - 既存のaspheric_sag/aspheric_sag10とは係数の次数対応が異なるため、別エントリポイントにする。
@@ -288,7 +291,7 @@ void batch_aspheric_sag10(double* r_array, int count, double c, double k,
  * @param radius 曲率半径（ray-tracing.jsと同じ符号規約）
  * @param conic コーニック定数
  * @param coef1..coef10 多項式係数
- * @param modeOdd 0: even (r^2..r^20), 1: odd (r^3..r^21)
+ * @param modeOdd 0: even (r^4..r^22), 1: odd (r^3..r^21)
  */
 EMSCRIPTEN_KEEPALIVE
 double aspheric_sag_rt10(double r, double radius, double conic,
