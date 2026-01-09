@@ -1,5 +1,6 @@
 
-co optical design system
+Collaborative Optical Tool
+
 =======
 
 ## Overview
