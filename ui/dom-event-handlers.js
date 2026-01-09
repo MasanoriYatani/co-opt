@@ -17,6 +17,7 @@ import { debugWASMSystem, quickWASMComparison } from '../debug/debug-utils.js';
 import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows, deriveBlocksFromLegacyOpticalSystemRows } from '../block-schema.js';
 import { calculateBackFocalLength, calculateImageDistance, calculateFocalLength, calculateParaxialData, findStopSurfaceIndex } from '../ray-paraxial.js';
 import { generateZMXText, downloadZMX } from '../zemax-export.js';
+import { parseZMXArrayBufferToOpticalSystemRows } from '../zemax-import.js';
 
 function derivePupilAndFocalLengthMmFromParaxial(opticalSystemRows, wavelengthMicrons, preferEntrancePupil) {
     let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
@@ -430,6 +431,103 @@ function setupExportZemaxButton() {
             console.warn('❌ [ZemaxExport] Export failed:', e);
             alert(e?.message || 'Zemax export failed');
         }
+    });
+}
+
+/**
+ * Import Zemax (.zmx) into the Optical System table (minimal subset).
+ * Note: This only updates the optical system surfaces (not source/object/requirements).
+ */
+function setupImportZemaxButton() {
+    const importBtn = document.getElementById('import-zemax-btn');
+    if (!importBtn) return;
+
+    importBtn.addEventListener('click', () => {
+        if (document.activeElement) document.activeElement.blur();
+
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.zmx,text/plain';
+        input.style.display = 'none';
+        document.body.appendChild(input);
+
+        input.onchange = async (e) => {
+            const file = e?.target?.files?.[0];
+            if (!file) {
+                try { document.body.removeChild(input); } catch (_) {}
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (evt) => {
+                try {
+                    const buf = evt?.target?.result;
+                    if (!buf) throw new Error('Failed to read .zmx file.');
+
+                    const parsed = parseZMXArrayBufferToOpticalSystemRows(buf, { filename: file.name });
+                    const rows = parsed?.rows || [];
+                    const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
+
+                    if (!rows || rows.length === 0) throw new Error('Zemax import produced no surfaces.');
+
+                    // Persist + apply
+                    saveLensTableData(rows);
+                    localStorage.setItem('loadedFileName', file.name);
+
+                    // Update filename UI
+                    try {
+                        const fileNameElement = document.getElementById('loaded-file-name');
+                        if (fileNameElement) {
+                            fileNameElement.textContent = file.name;
+                            fileNameElement.style.color = '#1a4d8f';
+                        }
+                    } catch (_) {}
+
+                    try { globalThis.__configurationAutoSaveDisabled = true; } catch (_) {}
+                    try {
+                        if (window.tableOpticalSystem && typeof window.tableOpticalSystem.setData === 'function') {
+                            Promise.resolve(window.tableOpticalSystem.setData(rows)).finally(() => {
+                                try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                                try { updateSurfaceNumberSelect(); } catch (_) {}
+                                try { if (typeof window.refreshConfigurationUI === 'function') window.refreshConfigurationUI(); } catch (_) {}
+                                try { if (typeof window.updatePSFObjectOptions === 'function') window.updatePSFObjectOptions(); } catch (_) {}
+                                try { refreshBlockInspector(); } catch (_) {}
+                            });
+                        } else {
+                            try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                        }
+                    } catch (err) {
+                        try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                        throw err;
+                    }
+
+                    if (issues.length > 0) {
+                        console.warn('⚠️ [ZemaxImport] Issues:', issues);
+                        const warnCount = issues.filter(i => i?.severity === 'warning').length;
+                        if (warnCount > 0) {
+                            alert(`Zemax import completed with ${warnCount} warning(s). See console for details.`);
+                        }
+                    }
+
+                    console.log('✅ [ZemaxImport] Imported .zmx:', file.name);
+                } catch (err) {
+                    console.warn('❌ [ZemaxImport] Import failed:', err);
+                    alert(err?.message || 'Zemax import failed');
+                    try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                } finally {
+                    try { document.body.removeChild(input); } catch (_) {}
+                }
+            };
+            reader.onerror = () => {
+                console.error('❌ [ZemaxImport] FileReader error:', reader.error);
+                alert(reader.error?.message || 'FileReader error while importing .zmx');
+                try { document.body.removeChild(input); } catch (_) {}
+            };
+
+            reader.readAsArrayBuffer(file);
+        };
+
+        input.click();
     });
 }
 
@@ -3949,6 +4047,7 @@ export function setupDOMEventHandlers() {
         // UIイベントハンドラーを設定
         setupSaveButton();
         setupLoadButton();
+        setupImportZemaxButton();
         setupExportZemaxButton();
         setupClearStorageButton();
         setupSuggestOptimizeButtons();
