@@ -7067,6 +7067,22 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
                 return !isSphericalSurfType(st);
             };
 
+            const normalizeAsphereMode = (v) => {
+                const s = String(v ?? '').trim();
+                if (s === '') return null;
+                const key = s.replace(/\s+/g, '').replace(/[_-]+/g, '').toLowerCase();
+                if (key === 'asphericeven' || key === 'asphericaleven' || key === 'evenasphere' || key === 'evenaspheric') return 'even';
+                if (key === 'asphericodd' || key === 'asphericalodd' || key === 'oddasphere' || key === 'oddaspheric') return 'odd';
+                return null;
+            };
+
+            const asphereCoefLabel = (prefix, surfTypeValue, coefIndex, fallback) => {
+                const mode = normalizeAsphereMode(surfTypeValue);
+                if (!mode) return String(fallback ?? '');
+                const a = (mode === 'even') ? (2 * coefIndex) : (2 * coefIndex - 1);
+                return `${String(prefix)} coefA${a}`;
+            };
+
             if (blockType === 'ObjectPlane') {
                 items.push(
                     { kind: 'objectMode', key: 'objectDistanceMode', label: 'object (INF/finite)', noOptimize: true },
@@ -7088,10 +7104,18 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
 
                 // Coef* is unused for Spherical. Hide to keep Design Intent concise.
                 if (shouldShowCoefsForSurfTypeKey('frontSurfType')) {
-                    for (let i = 1; i <= 10; i++) items.push({ key: `frontCoef${i}`, label: `frontCoef${i}` });
+                    const st = getValue('frontSurfType');
+                    for (let i = 1; i <= 10; i++) {
+                        const fb = `frontCoef${i}`;
+                        items.push({ key: fb, label: asphereCoefLabel('front', st, i, fb) });
+                    }
                 }
                 if (shouldShowCoefsForSurfTypeKey('backSurfType')) {
-                    for (let i = 1; i <= 10; i++) items.push({ key: `backCoef${i}`, label: `backCoef${i}` });
+                    const st = getValue('backSurfType');
+                    for (let i = 1; i <= 10; i++) {
+                        const fb = `backCoef${i}`;
+                        items.push({ key: fb, label: asphereCoefLabel('back', st, i, fb) });
+                    }
                 }
             } else if (blockType === 'Doublet' || blockType === 'Triplet') {
                 const elemCount = (blockType === 'Doublet') ? 2 : 3;
@@ -7109,7 +7133,11 @@ function renderBlockInspector(summary, groups, blockById = null, blocksInOrder =
 
                     // Coef* is unused for Spherical. Hide per-surface.
                     if (shouldShowCoefsForSurfTypeKey(`surf${si}SurfType`)) {
-                        for (let k = 1; k <= 10; k++) items.push({ key: `surf${si}Coef${k}`, label: `surf${si}Coef${k}` });
+                        const st = getValue(`surf${si}SurfType`);
+                        for (let k = 1; k <= 10; k++) {
+                            const fb = `surf${si}Coef${k}`;
+                            items.push({ key: fb, label: asphereCoefLabel(`surf${si}`, st, k, fb) });
+                        }
                     }
                 }
             } else if (blockType === 'Gap' || blockType === 'AirGap') {
