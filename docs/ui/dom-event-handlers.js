@@ -540,7 +540,7 @@ function setupSuggestOptimizeButtons() {
                         popup.document.body.style.margin = '12px';
                         popup.document.body.innerHTML = `
 <div style="font-size:14px; font-weight:600; margin-bottom:8px;">Optimize Progress</div>
-<div style="font-size:12px; color:#555; margin-bottom:10px;">候補評価（±step）ごとに更新</div>
+<div style="font-size:12px; color:#555; margin-bottom:10px;">Updates per candidate evaluation (±step)</div>
 <div style="margin-bottom:10px; display:flex; align-items:center; gap:6px;">
     <button id="opt-run" style="padding:6px 10px;" disabled>Run</button>
     <button id="opt-stop" style="padding:6px 10px;">Stop</button>
@@ -564,9 +564,6 @@ function setupSuggestOptimizeButtons() {
     <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Soft</span><span id="opt-soft" style="margin-left:8px;">-</span></div>
     <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Best</span><span id="opt-best" style="margin-left:8px;">-</span></div>
     <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Rho</span><span id="opt-rho" style="margin-left:8px;">-</span></div>
-    <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Var</span><span id="opt-var" style="margin-left:8px;">-</span></div>
-    <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Cand</span><span id="opt-cand" style="margin-left:8px;">-</span></div>
-    <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Effective</span><span id="opt-effective" style="margin-left:8px;">-</span></div>
     <div style="display:flex; align-items:baseline;"><span style="display:inline-block; width:110px; color:#555;">Issue</span><span id="opt-issue" style="margin-left:8px;">-</span></div>
 </div>
 `;
@@ -631,9 +628,6 @@ function setupSuggestOptimizeButtons() {
                 }
 
                 const totalMeritEl = document.getElementById('total-merit-value');
-                let lastVarText = '-';
-                let lastCandText = '-';
-                let lastEffText = '-';
                 let lastIssueText = '-';
                 let lastReqText = '-';
                 let lastResText = '-';
@@ -689,35 +683,6 @@ function setupSuggestOptimizeButtons() {
                             }
                         }
                     } catch (_) {}
-
-                    // Preserve the last Var/Cand shown. LM progress updates often don't include
-                    // variableId/candidateValue, and we don't want those updates to erase the fields.
-                    if (p?.variableId) {
-                        const prevVarText = lastVarText;
-                        lastVarText = String(p.variableId);
-                        if (lastVarText !== prevVarText) {
-                            // Avoid showing stale values when switching to a new variable.
-                            lastCandText = '-';
-                            lastEffText = '-';
-                            lastIssueText = '-';
-                        }
-                    }
-                    if (p?.candidateValue !== undefined) {
-                        lastCandText = String(p.candidateValue);
-                    } else if (p?.acceptedValue !== undefined) {
-                        lastCandText = String(p.acceptedValue);
-                    }
-
-                    // New fields added by optimizer-mvp.js to align displayed values with Design Intent/Requirements.
-                    // Keep them "sticky" across LM progress events that omit variable/candidate/value fields.
-                    if (p && ('effectiveValue' in p)) {
-                        lastEffText = (p.effectiveValue === undefined || p.effectiveValue === null)
-                            ? '-'
-                            : String(p.effectiveValue);
-                    } else if (p?.acceptedValue !== undefined && lastEffText === '-') {
-                        // Best-effort fallback.
-                        lastEffText = String(p.acceptedValue);
-                    }
                     if (p && ('materialIssue' in p)) {
                         lastIssueText = (p.materialIssue === undefined || p.materialIssue === null || p.materialIssue === '')
                             ? '-'
@@ -836,9 +801,6 @@ function setupSuggestOptimizeButtons() {
                             setText('opt-soft', lastSoftText);
                             setText('opt-best', Number.isFinite(best) ? best.toFixed(6) : String(p?.best ?? '-'));
                             setText('opt-rho', lastRhoText);
-                            setText('opt-var', lastVarText);
-                            setText('opt-cand', lastCandText);
-                            setText('opt-effective', lastEffText);
                             setText('opt-issue', lastIssueText);
 
                             // Stop state rendering
@@ -880,9 +842,6 @@ function setupSuggestOptimizeButtons() {
                     stopFlag.stop = false;
                     acceptCount = 0;
                     rejectCount = 0;
-                    lastVarText = '-';
-                    lastCandText = '-';
-                    lastEffText = '-';
                     lastIssueText = '-';
                     lastReqText = '-';
                     lastResText = '-';
