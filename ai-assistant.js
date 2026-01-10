@@ -5,7 +5,7 @@
  */
 
 import { getSystemContext } from './ai-context.js';
-import { expandBlocksToOpticalSystemRows } from './block-schema.js';
+import { BLOCK_SCHEMA_VERSION, expandBlocksToOpticalSystemRows, deriveBlocksFromLegacyOpticalSystemRows } from './block-schema.js';
 
 const AI_CONFIG_KEY = 'ai_assistant_config';
 const AI_HISTORY_KEY = 'ai_assistant_history';
@@ -1664,6 +1664,22 @@ function buildGeminiTools() {
                     },
                     required: ['color']
                 }
+            },
+            {
+                name: 'apply_optical_system_rows',
+                description: 'Optical System（surface rows）を active configuration に取り込み、可能なら Design Intent（blocks）へ自動変換してUIへ反映します。特許の処方表/表をAIが行配列に整形した後に適用する用途。',
+                parameters: {
+                    type: 'object',
+                    properties: {
+                        applyToAllConfigs: { type: 'boolean', description: 'true の場合、全ての configuration の opticalSystem を同じ rows に置換します（blocksの自動変換も試みます）' },
+                        rows: {
+                            type: 'array',
+                            description: 'Optical system rows (Surf 0..N-1). Each row may include: object type, radius, thickness, semidia, material, surfType, conic, coef1..coef10, comment',
+                            items: { type: 'object' }
+                        }
+                    },
+                    required: ['rows']
+                }
             }
         ]
     }];
@@ -1772,6 +1788,8 @@ async function runGeminiConversationWithTools({ systemInstruction, contents, api
                     result = await tool_set_surface_field(c.args);
                 } else if (c.name === 'set_surface_color') {
                     result = await tool_set_surface_color(c.args);
+                } else if (c.name === 'apply_optical_system_rows') {
+                    result = await tool_apply_optical_system_rows(c.args);
                 } else {
                     result = { ok: false, error: `Unknown tool: ${c.name}` };
                 }
@@ -1904,8 +1922,106 @@ function buildOpenAITools() {
                     ]
                 }
             }
+        },
+        {
+            type: 'function',
+            function: {
+                name: 'apply_optical_system_rows',
+                description: 'Optical System（surface rows）を active configuration に取り込み、可能なら Design Intent（blocks）へ自動変換してUIへ反映します。特許の処方表/表をAIが行配列に整形した後に適用する用途。',
+                parameters: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                        applyToAllConfigs: { type: 'boolean', description: 'true の場合、全ての configuration の opticalSystem を同じ rows に置換します（blocksの自動変換も試みます）' },
+                        rows: { type: 'array', items: { type: 'object' }, description: 'Optical system rows (Surf 0..N-1). Each row may include: object type, radius, thickness, semidia, material, surfType, conic, coef1..coef10, comment' }
+                    },
+                    required: ['rows']
+                }
+            }
         }
     ];
+}
+
+function normalizeImportedOpticalRows(rows) {
+    const out = Array.isArray(rows) ? deepClone(rows) : [];
+    for (let i = 0; i < out.length; i++) {
+        if (!out[i] || typeof out[i] !== 'object') out[i] = {};
+        out[i].id = i;
+        // Normalize common aliases
+        if (out[i].type !== undefined && out[i]['object type'] === undefined) {
+            out[i]['object type'] = out[i].type;
+        }
+        if (out[i].glass !== undefined && out[i].material === undefined) {
+            out[i].material = out[i].glass;
+        }
+        if (out[i].semiDiameter !== undefined && out[i].semidia === undefined) {
+            out[i].semidia = out[i].semiDiameter;
+        }
+    }
+    return out;
+}
+
+async function tool_apply_optical_system_rows(args) {
+    const systemConfig = loadSystemConfigurations();
+    const cfg = getActiveConfig(systemConfig);
+    if (!systemConfig || !cfg) throw new Error('systemConfigurations / active configuration not found');
+
+    const applyToAllConfigs = !!args?.applyToAllConfigs;
+    const rowsIn = args?.rows;
+    const rowsNorm = normalizeImportedOpticalRows(rowsIn);
+    if (!Array.isArray(rowsNorm) || rowsNorm.length === 0) throw new Error('rows must be a non-empty array');
+
+    const targets = applyToAllConfigs ? (systemConfig.configurations || []) : [cfg];
+    const perCfg = [];
+
+    for (const c of targets) {
+        try {
+            const legacyRows = normalizeImportedOpticalRows(rowsNorm);
+            c.opticalSystem = legacyRows;
+
+            // Best-effort: derive Blocks (Design Intent) from legacy rows.
+            const derived = deriveBlocksFromLegacyOpticalSystemRows(legacyRows);
+            const issues = Array.isArray(derived?.issues) ? derived.issues : [];
+            const hasFatal = issues.some(i => i && i.severity === 'fatal');
+
+            if (!hasFatal && Array.isArray(derived?.blocks) && derived.blocks.length > 0) {
+                c.schemaVersion = c.schemaVersion || BLOCK_SCHEMA_VERSION;
+                c.blocks = derived.blocks;
+
+                // Re-expand from blocks so provenance is consistent.
+                const exp = expandBlocksToOpticalSystemRows(c.blocks);
+                if (exp && Array.isArray(exp.rows)) {
+                    try { preserveLegacySemidiaIntoExpandedRows(exp.rows, legacyRows); } catch (_) {}
+                    try {
+                        const objT = legacyRows?.[0]?.thickness;
+                        const s = String(objT ?? '').trim();
+                        if (s !== '' && exp.rows[0] && typeof exp.rows[0] === 'object') exp.rows[0].thickness = objT;
+                    } catch (_) {}
+                    c.opticalSystem = exp.rows;
+                }
+
+                if (!c.metadata || typeof c.metadata !== 'object') c.metadata = {};
+                c.metadata.importAnalyzeMode = false;
+            } else {
+                // Keep legacy surface workflow; mark that blocks were not derived.
+                if (!c.metadata || typeof c.metadata !== 'object') c.metadata = {};
+                c.metadata.importAnalyzeMode = true;
+            }
+
+            perCfg.push({ ok: true, configId: c?.id, blocksDerived: !hasFatal && Array.isArray(derived?.blocks) && derived.blocks.length > 0, issues });
+        } catch (e) {
+            perCfg.push({ ok: false, configId: c?.id, error: e?.message || String(e) });
+        }
+    }
+
+    await saveAndRefreshUI(systemConfig);
+    return { ok: perCfg.some(r => r.ok), applyToAllConfigs, appliedToConfigs: perCfg };
+}
+
+// Debug-only export: allows deterministic smoke tests without calling external LLM APIs.
+// Not used by the UI.
+export async function __debug_apply_optical_system_rows(args) {
+    return tool_apply_optical_system_rows(args);
 }
 
 function isPlainObject(v) {
@@ -2775,6 +2891,10 @@ async function runOpenAIConversationWithTools({ messages, apiKey, model, thinkin
                     result = await tool_set_block_param(args);
                 } else if (name === 'set_surface_field') {
                     result = await tool_set_surface_field(args);
+                } else if (name === 'set_surface_color') {
+                    result = await tool_set_surface_color(args);
+                } else if (name === 'apply_optical_system_rows') {
+                    result = await tool_apply_optical_system_rows(args);
                 } else {
                     result = { ok: false, error: `Unknown tool: ${name}` };
                 }
