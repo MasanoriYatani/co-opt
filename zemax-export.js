@@ -23,7 +23,8 @@ function normalizeMaterialName(material) {
   // Common variants
   if (s.toUpperCase() === 'AIR') return 'AIR';
   if (s.toUpperCase() === 'VACUUM') return 'AIR';
-  return s;
+  // Zemax glass names should not contain whitespace.
+  return s.replace(/\s+/g, '');
 }
 
 function encodeUtf16LeWithBom(str) {
@@ -131,7 +132,8 @@ export function generateZMXText(opticalSystemRows, options = {}) {
   const objectRows = normalizeArray(options.objectRows);
   if (objectRows.length > 0) {
     // Co-Opt's object table commonly stores field angles in degrees.
-    lines.push('FTYP 1');
+    // Zemax field type: use Angle so XFLD/YFLD are interpreted as field angles.
+    lines.push('FTYP 0');
     for (let i = 0; i < objectRows.length; i++) {
       const r = objectRows[i] ?? {};
       const x = parseNumberOrNull(r.xHeightAngle);
@@ -188,7 +190,7 @@ export function generateZMXText(opticalSystemRows, options = {}) {
 
     // Glass (gap medium after surface)
     const mat = normalizeMaterialName(row.material);
-    if (!isBlank(mat)) {
+    if (!isBlank(mat) && String(mat).toUpperCase() !== 'AIR') {
       lines.push(`GLAS ${mat}`);
     }
 
