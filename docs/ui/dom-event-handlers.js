@@ -421,9 +421,36 @@ function setupExportZemaxButton() {
 
         try {
             const rows = getOpticalSystemRows(window.tableOpticalSystem || tableOpticalSystem);
+
+            const includeSystemData = confirm('Include system settings (wavelength / field / pupil) in .zmx?\n\nFor maximum Zemax compatibility, choose Cancel (surfaces only).');
+
+            let sourceRows = undefined;
+            let objectRows = undefined;
+            let entrancePupilDiameterMm = undefined;
+
+            if (includeSystemData) {
+                sourceRows = getSourceRows(window.tableSource || tableSource);
+                objectRows = getObjectRows(window.tableObject || tableObject);
+
+                // Best-effort: compute entrance pupil diameter from paraxial data using the primary wavelength.
+                try {
+                    const primary = Array.isArray(sourceRows) ? sourceRows.find(r => String(r?.primary ?? '').trim()) : null;
+                    const primaryWavelengthMicrons = Number(primary?.wavelength);
+                    const wl = (Number.isFinite(primaryWavelengthMicrons) && primaryWavelengthMicrons > 0) ? primaryWavelengthMicrons : 0.5875618;
+                    const derived = derivePupilAndFocalLengthMmFromParaxial(rows, wl, true);
+                    if (Number.isFinite(derived?.pupilDiameterMm) && derived.pupilDiameterMm > 0) {
+                        entrancePupilDiameterMm = derived.pupilDiameterMm;
+                    }
+                } catch (_) {
+                    // ignore
+                }
+            }
             const zmxText = generateZMXText(rows, {
                 title: filename,
-                units: 'MM'
+                units: 'MM',
+                sourceRows,
+                objectRows,
+                entrancePupilDiameterMm
             });
             downloadZMX(zmxText, filename);
             console.log('✅ [ZemaxExport] Exported .zmx:', filename);
