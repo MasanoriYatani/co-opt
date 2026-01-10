@@ -107,21 +107,14 @@ export function generateZMXText(opticalSystemRows, options = {}) {
   // Wavelengths (from source table)
   const sourceRows = normalizeArray(options.sourceRows);
   if (sourceRows.length > 0) {
-    // Zemax typically expects a wavelength count.
-    lines.push(`WAVM ${sourceRows.length}`);
+    // Zemax-style: one WAVM line per wavelength: WAVM <index> <wavelength_um> <weight>
     for (let i = 0; i < sourceRows.length; i++) {
       const r = sourceRows[i] ?? {};
       const wl = parseNumberOrNull(r.wavelength);
-      if (wl !== null && Number.isFinite(wl) && wl > 0) {
-        lines.push(`WAVL ${i + 1} ${formatFloat(wl)}`);
-      }
-    }
-    for (let i = 0; i < sourceRows.length; i++) {
-      const r = sourceRows[i] ?? {};
+      if (wl === null || !Number.isFinite(wl) || wl <= 0) continue;
       const w = parseNumberOrNull(r.weight);
-      if (w !== null && Number.isFinite(w)) {
-        lines.push(`WWGT ${i + 1} ${formatFloat(w)}`);
-      }
+      const weight = (w !== null && Number.isFinite(w)) ? w : 1;
+      lines.push(`WAVM ${i + 1} ${formatFloat(wl)} ${formatFloat(weight)}`);
     }
 
     const primaryIndex = inferPrimaryWavelengthIndexOneBased(sourceRows);
@@ -134,18 +127,31 @@ export function generateZMXText(opticalSystemRows, options = {}) {
   const objectRows = normalizeArray(options.objectRows);
   if (objectRows.length > 0) {
     // Co-Opt's object table commonly stores field angles in degrees.
-    // Zemax uses indexed field definitions; use Angle so values are interpreted as field angles.
-    lines.push('FTYP 0');
+    // Zemax-produced ZMX commonly stores up to 12 fields on one line (lists), e.g.:
+    // XFLN x1 x2 ...
+    // YFLN y1 y2 ...
+    // FWGN w1 w2 ...
+    // Use Angle field type.
+    lines.push('FTYP 0 0 2 3 0 0 0 2');
+
+    const xs = [];
+    const ys = [];
+    const ws = [];
     for (let i = 0; i < objectRows.length; i++) {
       const r = objectRows[i] ?? {};
       const x = parseNumberOrNull(r.xHeightAngle);
       const y = parseNumberOrNull(r.yHeightAngle);
-      if ((x !== null && Number.isFinite(x)) || (y !== null && Number.isFinite(y))) {
-        const idx = i + 1;
-        lines.push(`XFLN ${idx} ${formatFloat(Number.isFinite(x) ? x : 0)}`);
-        lines.push(`YFLN ${idx} ${formatFloat(Number.isFinite(y) ? y : 0)}`);
-        lines.push(`FWGN ${idx} 1`);
-      }
+      // Skip rows that are entirely blank
+      if ((x === null || !Number.isFinite(x)) && (y === null || !Number.isFinite(y))) continue;
+      xs.push(formatFloat(Number.isFinite(x) ? x : 0));
+      ys.push(formatFloat(Number.isFinite(y) ? y : 0));
+      ws.push('1');
+    }
+
+    if (xs.length > 0) {
+      lines.push(`XFLN ${xs.join(' ')}`);
+      lines.push(`YFLN ${ys.join(' ')}`);
+      lines.push(`FWGN ${ws.join(' ')}`);
     }
   }
 
