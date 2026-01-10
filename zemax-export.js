@@ -107,18 +107,20 @@ export function generateZMXText(opticalSystemRows, options = {}) {
   // Wavelengths (from source table)
   const sourceRows = normalizeArray(options.sourceRows);
   if (sourceRows.length > 0) {
+    // Zemax typically expects a wavelength count.
+    lines.push(`WAVM ${sourceRows.length}`);
     for (let i = 0; i < sourceRows.length; i++) {
       const r = sourceRows[i] ?? {};
       const wl = parseNumberOrNull(r.wavelength);
       if (wl !== null && Number.isFinite(wl) && wl > 0) {
-        lines.push(`WAVL ${formatFloat(wl)}`);
+        lines.push(`WAVL ${i + 1} ${formatFloat(wl)}`);
       }
     }
     for (let i = 0; i < sourceRows.length; i++) {
       const r = sourceRows[i] ?? {};
       const w = parseNumberOrNull(r.weight);
       if (w !== null && Number.isFinite(w)) {
-        lines.push(`WWGT ${formatFloat(w)}`);
+        lines.push(`WWGT ${i + 1} ${formatFloat(w)}`);
       }
     }
 
@@ -132,16 +134,17 @@ export function generateZMXText(opticalSystemRows, options = {}) {
   const objectRows = normalizeArray(options.objectRows);
   if (objectRows.length > 0) {
     // Co-Opt's object table commonly stores field angles in degrees.
-    // Zemax field type: use Angle so XFLD/YFLD are interpreted as field angles.
+    // Zemax uses indexed field definitions; use Angle so values are interpreted as field angles.
     lines.push('FTYP 0');
     for (let i = 0; i < objectRows.length; i++) {
       const r = objectRows[i] ?? {};
       const x = parseNumberOrNull(r.xHeightAngle);
       const y = parseNumberOrNull(r.yHeightAngle);
       if ((x !== null && Number.isFinite(x)) || (y !== null && Number.isFinite(y))) {
-        lines.push(`XFLD ${formatFloat(Number.isFinite(x) ? x : 0)}`);
-        lines.push(`YFLD ${formatFloat(Number.isFinite(y) ? y : 0)}`);
-        lines.push('FWGT 1');
+        const idx = i + 1;
+        lines.push(`XFLN ${idx} ${formatFloat(Number.isFinite(x) ? x : 0)}`);
+        lines.push(`YFLN ${idx} ${formatFloat(Number.isFinite(y) ? y : 0)}`);
+        lines.push(`FWGN ${idx} 1`);
       }
     }
   }
