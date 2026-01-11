@@ -158,6 +158,10 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
   // System-level data (optional)
   /** @type {Map<number, {wavelength:number, weight:number}>} */
   const wavelengthsByIndex = new Map();
+  /** @type {number[]} */
+  const wavelengthsList = [];
+  /** @type {number[]} */
+  const wavelengthWeightsList = [];
   let primaryWavelengthIndex = null;
   /** @type {number[]} */
   let fieldXs = [];
@@ -198,6 +202,26 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
         wavelength: wl,
         weight: (wt !== null && Number.isFinite(wt)) ? wt : 1
       });
+      continue;
+    }
+
+    if (key === 'WAVL') {
+      // WAVL <wl1> <wl2> ... (Zemax list form)
+      for (let k = 1; k < tokens.length; k++) {
+        const wl = parseNumberOrNull(tokens[k]);
+        if (wl === null || !Number.isFinite(wl) || wl <= 0) continue;
+        wavelengthsList.push(wl);
+      }
+      continue;
+    }
+
+    if (key === 'WWGT') {
+      // WWGT <w1> <w2> ... (weights list form)
+      for (let k = 1; k < tokens.length; k++) {
+        const w = parseNumberOrNull(tokens[k]);
+        if (w === null || !Number.isFinite(w)) continue;
+        wavelengthWeightsList.push(w);
+      }
       continue;
     }
 
@@ -326,8 +350,11 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
       const row = ensureRow(rows, currentSurf);
       const disz = parseNumberOrNull(tokens[1]);
       if (disz === null) continue;
-      // If a very large placeholder is used, treat it as INF for co-opt.
-      if (disz === Infinity || (Number.isFinite(disz) && Math.abs(disz) >= 1e9)) {
+      // Treat Zemax INFINITY as INF in co-opt.
+      if (disz === Infinity) {
+        row.thickness = 'INF';
+      } else if (Number.isFinite(disz) && Math.abs(disz) >= 1e9) {
+        // If a very large placeholder is used, treat it as INF for co-opt.
         row.thickness = 'INF';
         addIssue('warning', `DISZ treated as INF at surface ${currentSurf} (value=${tokens[1]}).`);
       } else {
@@ -339,7 +366,20 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
     if (key === 'GLAS') {
       const row = ensureRow(rows, currentSurf);
       const name = String(tokens[1] ?? '').trim();
-      row.material = normalizeImportedMaterialName(name);
+
+      // Zemax can represent a "model glass" as:
+      // GLAS ___BLANK <...> <nd> <vd>
+      // Import the nd (tokens[4]) as a numeric material name so co-opt can still ray-trace.
+      if (String(name).toUpperCase() === '___BLANK') {
+        const nd = parseNumberOrNull(tokens[4]);
+        if (nd !== null && Number.isFinite(nd) && nd > 0) {
+          row.material = String(nd);
+        } else {
+          row.material = '';
+        }
+      } else {
+        row.material = normalizeImportedMaterialName(name);
+      }
       continue;
     }
 
@@ -429,6 +469,17 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
   // Convert system-level records into co-opt table rows (if present)
   /** @type {{id:number, wavelength:number, weight:number, primary:string, angle:number}[]} */
   const sourceRows = [];
+  if (wavelengthsByIndex.size === 0 && wavelengthsList.length > 0) {
+    for (let i = 0; i < wavelengthsList.length; i++) {
+      const wl = wavelengthsList[i];
+      const wt = (i < wavelengthWeightsList.length) ? wavelengthWeightsList[i] : 1;
+      wavelengthsByIndex.set(i + 1, {
+        wavelength: wl,
+        weight: (Number.isFinite(wt) ? wt : 1)
+      });
+    }
+  }
+
   if (wavelengthsByIndex.size > 0) {
     const indices = Array.from(wavelengthsByIndex.keys()).sort((a, b) => a - b);
     for (let i = 0; i < indices.length; i++) {
