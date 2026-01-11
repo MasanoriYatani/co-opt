@@ -1531,41 +1531,10 @@ export function drawLensCrossSectionWithSurfaceOrigins(scene, rows, surfaceOrigi
             continue;
         }
         
-        // Object面の処理 - thicknessが有限の場合のみ描画
+        // Object面は描画しない（Zemax-imported systems include a bookkeeping Object plane at Surf 0).
         const objectType = surf["object type"] || "";
         if (objectType === "Object") {
-            // Object面のthicknessをチェック
-            const objectThickness = surf.thickness;
-            const isInfiniteThickness = objectThickness === 'INF' || objectThickness === 'Infinity' || objectThickness === Infinity;
-            
-            // thickness=INFの場合、Object dataでangle判定も行う
-            if (isInfiniteThickness) {
-                // Objectデータを取得してangle判定
-                let isAngleObject = false;
-                try {
-                    // グローバルからObjectデータを取得
-                    const objectRows = window.getObjectRows ? window.getObjectRows() : [];
-                    if (objectRows && objectRows.length > 0) {
-                        const firstObject = objectRows[0];
-                        // obj.positionがangleまたは'angle'の場合
-                        const position = firstObject.position || (Array.isArray(firstObject) ? firstObject[3] : null);
-                        isAngleObject = position === 'angle' || position === 'Angle';
-                        console.log(`🔍 Surface ${i}: Object position判定 - position=${position}, isAngleObject=${isAngleObject}`);
-                    }
-                } catch (error) {
-                    console.warn(`⚠️ Surface ${i}: Object data取得エラー:`, error);
-                }
-                
-                if (isAngleObject) {
-                    console.log(`🔸 Surface ${i}: Object面（無限系 + angle）、描画スキップ`);
-                    continue;
-                } else {
-                    console.log(`🔸 Surface ${i}: Object面（無限系 but not angle）、クロスライン描画`);
-                }
-            } else {
-                console.log(`🔸 Surface ${i}: Object面（有限系、thickness=${objectThickness}）、クロスライン描画`);
-                // 有限系のObject面の場合は通常のレンズ面として処理を続行
-            }
+          continue;
         }
         
         // CB面はスキップ
@@ -1574,15 +1543,10 @@ export function drawLensCrossSectionWithSurfaceOrigins(scene, rows, surfaceOrigi
             continue;
         }
         
-        const semidia = parseFloat(surf.semidia) || (objectType === "Object" ? 10 : 0); // Object面の場合はデフォルト10を使用
+        const semidia = parseFloat(surf.semidia) || 0;
         if (semidia <= 0) {
             console.log(`🔸 Surface ${i}: semidia無効(${semidia})、スキップ`);
             continue;
-        }
-        
-        // Object面の場合の特別な処理
-        if (objectType === "Object") {
-            console.log(`🔸 Surface ${i}: Object面のクロスライン描画、semidia=${semidia}`);
         }
         
         // console.log(`🔸 Surface ${i}: 描画対象、semidia=${semidia}`);

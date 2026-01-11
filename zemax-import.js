@@ -17,16 +17,41 @@ function parseNumberOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function invertCurvatureToRadius(curv) {
+  if (!Number.isFinite(curv) || curv === 0) return 'INF';
+  const raw = 1 / curv;
+  if (!Number.isFinite(raw) || Math.abs(raw) < 1e-12) return 'INF';
+
+  // Avoid storing binary floating-point tails (e.g. 144.296000000000006).
+  // We try to find a rounded decimal radius that round-trips back to the given
+  // curvature within a tight tolerance.
+  const relTol = 1e-12;
+  const absTol = 1e-12;
+  const maxDecimals = 12;
+
+  for (let decimals = 0; decimals <= maxDecimals; decimals++) {
+    const snapped = Number(raw.toFixed(decimals));
+    if (!Number.isFinite(snapped) || Math.abs(snapped) < 1e-12) continue;
+    const back = 1 / snapped;
+    if (!Number.isFinite(back)) continue;
+    const tol = Math.max(absTol, relTol * Math.max(1, Math.abs(curv)));
+    if (Math.abs(back - curv) <= tol) return snapped;
+  }
+
+  return raw;
+}
+
 function normalizeImportedMaterialName(material) {
   const s = String(material ?? '').trim();
   if (s === '') return '';
   const up = s.toUpperCase();
   if (up === 'AIR' || up === 'VACUUM') return '';
 
-  // co-opt glass catalog includes some Ohara names with a space before the trailing number
-  // (e.g. "S-TIH 6"). Zemax uses whitespace-free names, so restore this for the common S-XXXn pattern.
-  if (!/\s/.test(s) && /^S-[A-Z]{3,}\d+$/i.test(s)) {
-    return s.replace(/^S-([A-Z]{3,})(\d+)$/i, 'S-$1 $2');
+  // co-opt glass catalog includes some Ohara names with a space before a trailing single digit
+  // (e.g. "S-TIH 6", "S-TIM 8", "L-BSL 7"). co-opt exports whitespace-free names to match Zemax,
+  // so on import, restore that space for common cases.
+  if (!/\s/.test(s) && /^(S|L)-[A-Z]{3,}\d$/i.test(s)) {
+    return s.replace(/^([A-Z]-[A-Z]{3,})(\d)$/i, '$1 $2');
   }
 
   return s;
@@ -169,6 +194,10 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
   let fieldYs = [];
   /** @type {number[]} */
   let fieldWs = [];
+  /** @type {'Angle'|'Rectangle'} */
+  let fieldPosition = 'Rectangle';
+  /** @type {null|'Angle'|'Rectangle'} */
+  let fieldPositionFromFTYP = null;
   let entrancePupilDiameterMm = null;
 
   let currentSurf = null;
@@ -239,6 +268,17 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
     if (key === 'ENPD') {
       const v = parseNumberOrNull(tokens[1]);
       if (v !== null && Number.isFinite(v) && v > 0) entrancePupilDiameterMm = v;
+      continue;
+    }
+
+    if (key === 'FTYP') {
+      // Minimal handling: co-opt export uses Angle field type.
+      // We treat token[3] == 2 as Angle (matches our exporter: `FTYP 0 0 2 3 0 0 0 2`).
+      const t3 = parseNumberOrNull(tokens[3]);
+      if (t3 !== null && Number.isFinite(t3) && Math.trunc(t3) === 2) {
+        fieldPosition = 'Angle';
+        fieldPositionFromFTYP = 'Angle';
+      }
       continue;
     }
 
@@ -336,13 +376,7 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
       const row = ensureRow(rows, currentSurf);
       const curv = parseNumberOrNull(tokens[1]);
       if (curv === null) continue;
-      if (curv === 0) {
-        row.radius = 'INF';
-      } else if (!Number.isFinite(curv)) {
-        row.radius = 'INF';
-      } else {
-        row.radius = 1 / curv;
-      }
+      row.radius = invertCurvatureToRadius(curv);
       continue;
     }
 
@@ -353,10 +387,17 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
       // Treat Zemax INFINITY as INF in co-opt.
       if (disz === Infinity) {
         row.thickness = 'INF';
+        // If the object is at infinity and FTYP is missing, fields are almost certainly angles.
+        if (currentSurf === 0 && fieldPositionFromFTYP === null) {
+          fieldPosition = 'Angle';
+        }
       } else if (Number.isFinite(disz) && Math.abs(disz) >= 1e9) {
         // If a very large placeholder is used, treat it as INF for co-opt.
         row.thickness = 'INF';
         addIssue('warning', `DISZ treated as INF at surface ${currentSurf} (value=${tokens[1]}).`);
+        if (currentSurf === 0 && fieldPositionFromFTYP === null) {
+          fieldPosition = 'Angle';
+        }
       } else {
         row.thickness = disz;
       }
@@ -506,6 +547,12 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
   const objectRows = [];
   const fieldCount = Math.max(fieldXs.length, fieldYs.length, fieldWs.length);
   if (fieldCount > 0) {
+    // Final fallback: if FTYP is absent, but the Object thickness is INF, treat fields as angles.
+    try {
+      const objT = rows?.[0]?.thickness;
+      const isInf = objT === 'INF' || objT === 'Infinity' || objT === Infinity;
+      if (fieldPositionFromFTYP === null && isInf) fieldPosition = 'Angle';
+    } catch (_) {}
     for (let i = 0; i < fieldCount; i++) {
       const x = Number.isFinite(fieldXs[i]) ? fieldXs[i] : 0;
       const y = Number.isFinite(fieldYs[i]) ? fieldYs[i] : 0;
@@ -514,7 +561,7 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
         id: i + 1,
         xHeightAngle: x,
         yHeightAngle: y,
-        position: 'Rectangle',
+        position: fieldPosition,
         angle: 0
       });
     }

@@ -16,8 +16,416 @@ import { tableOpticalSystem } from '../table-optical-system.js';
 import { debugWASMSystem, quickWASMComparison } from '../debug/debug-utils.js';
 import { BLOCK_SCHEMA_VERSION, DEFAULT_STOP_SEMI_DIAMETER, configurationHasBlocks, validateBlocksConfiguration, expandBlocksToOpticalSystemRows, deriveBlocksFromLegacyOpticalSystemRows } from '../block-schema.js';
 import { calculateBackFocalLength, calculateImageDistance, calculateFocalLength, calculateParaxialData, findStopSurfaceIndex } from '../ray-paraxial.js';
+import { traceRay, traceRayHitPoint } from '../ray-tracing.js';
+import { findInfiniteSystemChiefRayOrigin, findApertureBoundaryRays } from '../gen-ray-cross-infinite.js';
 import { generateZMXText, downloadZMX } from '../zemax-export.js';
 import { parseZMXArrayBufferToOpticalSystemRows } from '../zemax-import.js';
+
+function __zmxPickPrimaryWavelengthMicrons(sourceRows) {
+    try {
+        const rows = Array.isArray(sourceRows) ? sourceRows : [];
+        const primary = rows.find(r => String(r?.primary ?? '').trim());
+        const wl = Number((primary || rows[0])?.wavelength);
+        return (Number.isFinite(wl) && wl > 0) ? wl : 0.5876;
+    } catch (_) {
+        return 0.5876;
+    }
+}
+
+function __zmxGetStopRadiusMmFromRows(rows, stopIndex, entrancePupilDiameterMm) {
+    try {
+        const r = Array.isArray(rows) ? rows[stopIndex] : null;
+        const raw = r?.semidia ?? r?.Semidia ?? r?.['Semi Diameter'] ?? r?.aperture ?? r?.Aperture ?? NaN;
+        const sd = Math.abs(parseFloat(raw));
+        if (Number.isFinite(sd) && sd > 0) {
+            const isApertureField = !!(r && (r.aperture !== undefined || r.Aperture !== undefined));
+            const stopRadiusMm = isApertureField ? (sd * 0.5) : sd;
+            if (Number.isFinite(stopRadiusMm) && stopRadiusMm > 0) return stopRadiusMm;
+        }
+    } catch (_) {}
+
+    const enpd = Number(entrancePupilDiameterMm);
+    if (Number.isFinite(enpd) && enpd > 0) return Math.abs(enpd) * 0.5;
+
+    return DEFAULT_STOP_SEMI_DIAMETER;
+}
+
+function __zmxIsInfiniteConjugateFromObjectRow(opticalSystemRows) {
+    try {
+        const t = opticalSystemRows?.[0]?.thickness;
+        if (t === Infinity) return true;
+        const s = (t === undefined || t === null) ? '' : String(t).trim().toUpperCase();
+        return (s === 'INF' || s === 'INFINITY');
+    } catch (_) {
+        return false;
+    }
+}
+
+function __zmxNormalizeDir(x, y, z) {
+    const nx = Number(x);
+    const ny = Number(y);
+    const nz = Number(z);
+    const L = Math.sqrt(nx * nx + ny * ny + nz * nz);
+    if (!Number.isFinite(L) || L <= 0) return { x: 0, y: 0, z: 1 };
+    return { x: nx / L, y: ny / L, z: nz / L };
+}
+
+function __zmxTraceRayToSurfaceIndex(opticalSystemRows, ray0, surfaceIndex) {
+    try {
+        return traceRayHitPoint(opticalSystemRows, ray0, 1.0, surfaceIndex);
+    } catch (_) {
+        return null;
+    }
+}
+
+function __zmxSolveCrossRayToStopCoordAxis(opticalSystemRows, stopIndex, targetCoordMm, wavelengthMicrons, axis /* 'x'|'y' */, options = null) {
+    const isInfinite = __zmxIsInfiniteConjugateFromObjectRow(opticalSystemRows);
+    const zStart = (options && typeof options === 'object' && Number.isFinite(options.zStart)) ? Number(options.zStart) : (isInfinite ? -25 : 0);
+    const axisLower = String(axis || 'y').toLowerCase();
+    const useX = axisLower === 'x';
+    const target = Number(targetCoordMm);
+    const dirOverride = (options && typeof options === 'object') ? options.direction : null;
+    const baseOrigin = (options && typeof options === 'object' && options.baseOrigin && typeof options.baseOrigin === 'object') ? options.baseOrigin : null;
+
+    const evalFunc = (u) => {
+        const uNum = Number(u);
+        if (!Number.isFinite(uNum)) return { ok: false, blocked: true, value: Infinity };
+
+        let ray0;
+        if (isInfinite) {
+            const dir = (dirOverride && typeof dirOverride === 'object') ? dirOverride : { x: 0, y: 0, z: 1 };
+            const bx = baseOrigin ? Number(baseOrigin.x) : 0;
+            const by = baseOrigin ? Number(baseOrigin.y) : 0;
+            const bz = baseOrigin ? Number(baseOrigin.z) : zStart;
+            ray0 = {
+                pos: { x: bx + (useX ? uNum : 0), y: by + (useX ? 0 : uNum), z: bz },
+                dir: { x: Number(dir.x), y: Number(dir.y), z: Number(dir.z) },
+                wavelength: wavelengthMicrons
+            };
+        } else {
+            ray0 = {
+                pos: { x: 0, y: 0, z: zStart },
+                dir: useX ? __zmxNormalizeDir(uNum, 0, 1) : __zmxNormalizeDir(0, uNum, 1),
+                wavelength: wavelengthMicrons
+            };
+        }
+
+        const hit = __zmxTraceRayToSurfaceIndex(opticalSystemRows, ray0, stopIndex);
+        if (!hit) return { ok: false, blocked: true, value: Infinity, ray0 };
+        const vStop = Number(useX ? hit.x : hit.y);
+        if (!Number.isFinite(vStop)) return { ok: false, blocked: true, value: Infinity, ray0 };
+        return { ok: true, blocked: false, value: vStop - target, ray0 };
+    };
+
+    const f0 = evalFunc(0);
+    if (!f0.ok && !f0.ray0) return null;
+
+    if (f0.ok && Number.isFinite(f0.value) && Math.abs(f0.value) < 1e-7) return f0.ray0;
+
+    let lo = 0;
+    // Pick the initial search direction based on whether u needs to increase or decrease
+    // to approach the target coordinate at the stop.
+    const dirSign = (f0.ok && Number.isFinite(f0.value) && f0.value < 0) ? +1 : -1;
+    let hi = (isInfinite ? Math.max(1e-6, Math.abs(target) || 1) : 0.05) * dirSign;
+    let fhiObj = evalFunc(hi);
+    let tries = 0;
+    while (tries < 40) {
+        if (fhiObj.ok) {
+            if ((f0.ok && Number.isFinite(f0.value) && Number.isFinite(fhiObj.value)) && (f0.value === 0 || (f0.value > 0) !== (fhiObj.value > 0))) break;
+        } else if (fhiObj.blocked) {
+            break;
+        }
+        hi *= 2;
+        fhiObj = evalFunc(hi);
+        tries++;
+    }
+    if (!(fhiObj.ok && f0.ok && Number.isFinite(f0.value) && Number.isFinite(fhiObj.value) && (f0.value === 0 || (f0.value > 0) !== (fhiObj.value > 0)))) {
+        return null;
+    }
+
+    let bestRay0 = (fhiObj && fhiObj.ray0) ? fhiObj.ray0 : (f0.ray0 || null);
+    for (let it = 0; it < 50; it++) {
+        const mid = (lo + hi) * 0.5;
+        const fm = evalFunc(mid);
+        if (fm.ray0) bestRay0 = fm.ray0;
+
+        if (fm.ok) {
+            if (Math.abs(fm.value) < 1e-7) {
+                bestRay0 = fm.ray0;
+                break;
+            }
+            if (fm.value >= 0) hi = mid;
+            else lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return bestRay0;
+}
+
+function __zmxIsCoordBreakRow(row) {
+    const st = String(row?.surfType ?? row?.['surf type'] ?? '').toLowerCase();
+    return st === 'coord break' || st === 'coordinate break' || st === 'cb';
+}
+
+function __zmxIsObjectRow(row) {
+    const t = String(row?.['object type'] ?? row?.object ?? row?.Object ?? '').toLowerCase();
+    return t === 'object';
+}
+
+// traceRay() rayPath does not record intersections for Object/Coord Break rows.
+// Convert table surfaceIndex -> rayPath point index.
+function __zmxGetRayPathPointIndexForSurfaceIndex(opticalSystemRows, surfaceIndex) {
+    if (!Array.isArray(opticalSystemRows) || surfaceIndex === null || surfaceIndex === undefined) return null;
+    const sIdx = Math.max(0, Math.min(Number(surfaceIndex), opticalSystemRows.length - 1));
+    let count = 0;
+    for (let i = 0; i <= sIdx; i++) {
+        const row = opticalSystemRows[i];
+        if (__zmxIsCoordBreakRow(row)) continue;
+        if (__zmxIsObjectRow(row)) continue;
+        count++;
+    }
+    return count > 0 ? count : null;
+}
+
+function __zmxGetRayPointAtSurfaceIndex(rayPath, opticalSystemRows, surfaceIndex) {
+    if (!Array.isArray(rayPath)) return null;
+    const pIdx = __zmxGetRayPathPointIndexForSurfaceIndex(opticalSystemRows, surfaceIndex);
+    if (pIdx === null) return null;
+    if (pIdx >= 0 && pIdx < rayPath.length) return rayPath[pIdx];
+    return null;
+}
+
+function __zmxDirectionFromObjectRowDeg(objectRow) {
+    try {
+        const angleX = Number(objectRow?.xHeightAngle ?? 0) * Math.PI / 180;
+        const angleY = Number(objectRow?.yHeightAngle ?? 0) * Math.PI / 180;
+        const cosX = Math.cos(angleX);
+        const cosY = Math.cos(angleY);
+        const sinX = Math.sin(angleX);
+        const sinY = Math.sin(angleY);
+        const dx = sinX * cosY;
+        const dy = sinY * cosX;
+        const dz = cosX * cosY;
+        return __zmxNormalizeDir(dx, dy, dz);
+    } catch (_) {
+        return { x: 0, y: 0, z: 1 };
+    }
+}
+
+function __zmxComputeSurfaceOriginsZLikeGenRayCross(opticalSystemRows) {
+    const zs = [];
+    let cumulativeZ = 0;
+    const rows = Array.isArray(opticalSystemRows) ? opticalSystemRows : [];
+    for (let i = 0; i < rows.length; i++) {
+        zs.push(Number(cumulativeZ) || 0);
+        const thickness = rows[i]?.thickness;
+        if (thickness !== undefined && thickness !== null && thickness !== 'INF' && thickness !== 'Infinity') {
+            const numericThickness = parseFloat(thickness);
+            if (!isNaN(numericThickness)) cumulativeZ += numericThickness;
+        }
+    }
+    return zs;
+}
+
+function __zmxApplySemidiaOverridesFromMarginalRays(activeCfg, rowsToApply, sourceRows, entrancePupilDiameterMm, objectRows) {
+    if (!activeCfg || typeof activeCfg !== 'object' || !Array.isArray(rowsToApply) || rowsToApply.length === 0) {
+        return { ok: false, reason: 'invalid inputs' };
+    }
+
+    const stopIndex = findStopSurfaceIndex(rowsToApply);
+    if (stopIndex < 0) return { ok: false, reason: 'stop not found' };
+
+    const wl = __zmxPickPrimaryWavelengthMicrons(sourceRows);
+    const stopRadiusMm = __zmxGetStopRadiusMmFromRows(rowsToApply, stopIndex, entrancePupilDiameterMm);
+    const marginMm = 0;
+
+    // Ignore tiny positive radii caused by floating-point noise (e.g. ~1e-15).
+    // Use both an absolute and stop-relative floor to avoid polluting semidiaOverrides/blocks.aperture.
+    const MIN_SEMIDIA_ABS_MM = 1e-6;
+    const MIN_SEMIDIA_REL_TO_STOP = 1e-6;
+    const minUsefulRmm = Math.max(MIN_SEMIDIA_ABS_MM, Math.abs(Number(stopRadiusMm) || 0) * MIN_SEMIDIA_REL_TO_STOP);
+
+    const paths = [];
+
+    const isInfinite = __zmxIsInfiniteConjugateFromObjectRow(rowsToApply);
+    const fields = (Array.isArray(objectRows) && objectRows.length > 0) ? objectRows : [{ xHeightAngle: 0, yHeightAngle: 0 }];
+
+    // Avoid a chicken/egg issue for high field angles:
+    // - Chief/boundary ray search can fail if surfaces have too-small default semidia (e.g. 10mm)
+    // - But we need those rays to *compute* a better semidia
+    // So we temporarily relax physical apertures during tracing by setting large semidia.
+    const BIG_SEMIDIA_MM = Math.max(200, Math.abs(Number(stopRadiusMm) || 0) * 20, 100);
+    const originalSemidias = new Array(rowsToApply.length);
+    try {
+        for (let i = 0; i < rowsToApply.length; i++) {
+            const r = rowsToApply[i];
+            if (!r || typeof r !== 'object') continue;
+            originalSemidias[i] = r.semidia;
+            const t = String(r?.['object type'] ?? r?.object ?? '').trim().toLowerCase();
+            if (t === 'object' || t === 'image') continue;
+            if (i === stopIndex || t === 'stop') {
+                r.semidia = stopRadiusMm;
+                continue;
+            }
+            if (__zmxIsCoordBreakRow(r)) continue;
+            r.semidia = BIG_SEMIDIA_MM;
+        }
+    } catch (_) {}
+
+    if (isInfinite) {
+        // Use the same robust chief/boundary search used by the ray visualizer (gen-ray-cross-infinite.js).
+        const zs = __zmxComputeSurfaceOriginsZLikeGenRayCross(rowsToApply);
+        const stopCenter = { x: 0, y: 0, z: Number(zs?.[stopIndex] ?? 0) };
+
+        for (const f of fields) {
+            const dirXYZ = __zmxDirectionFromObjectRowDeg(f);
+            const dirIJK = { i: dirXYZ.x, j: dirXYZ.y, k: dirXYZ.z };
+
+            const chiefOrigin = findInfiniteSystemChiefRayOrigin(
+                dirIJK,
+                stopCenter,
+                stopIndex,
+                rowsToApply,
+                false,
+                null,
+                wl
+            );
+
+            if (!chiefOrigin) continue;
+
+            const boundary = findApertureBoundaryRays(
+                chiefOrigin,
+                dirXYZ,
+                rowsToApply,
+                { radius: stopRadiusMm },
+                { debugMode: false, wavelength: wl, targetSurfaceIndex: null }
+            );
+
+            for (const b of Array.isArray(boundary) ? boundary : []) {
+                const origin = b?.origin;
+                const dir = b?.rayDirection;
+                if (!origin || !dir) continue;
+                const ray0 = { pos: { x: Number(origin.x), y: Number(origin.y), z: Number(origin.z) }, dir: { x: Number(dir.x), y: Number(dir.y), z: Number(dir.z) }, wavelength: wl };
+                const p = traceRay(rowsToApply, ray0, 1.0, null, null);
+                if (Array.isArray(p)) paths.push(p);
+            }
+        }
+    } else {
+        // Finite conjugates: keep the legacy on-axis approximation (better than default 10).
+        const ray0y = __zmxSolveCrossRayToStopCoordAxis(rowsToApply, stopIndex, stopRadiusMm, wl, 'y');
+        const ray0x = __zmxSolveCrossRayToStopCoordAxis(rowsToApply, stopIndex, stopRadiusMm, wl, 'x');
+        if (ray0y) {
+            const p = traceRay(rowsToApply, ray0y, 1.0, null, null);
+            if (Array.isArray(p)) paths.push(p);
+        }
+        if (ray0x) {
+            const p = traceRay(rowsToApply, ray0x, 1.0, null, null);
+            if (Array.isArray(p)) paths.push(p);
+        }
+    }
+
+    // Restore original semidia before writing computed values back.
+    try {
+        for (let i = 0; i < rowsToApply.length; i++) {
+            const r = rowsToApply[i];
+            if (!r || typeof r !== 'object') continue;
+            r.semidia = originalSemidias[i];
+        }
+    } catch (_) {}
+
+    if (paths.length === 0) {
+        try {
+            if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
+            activeCfg.metadata.lastSemidiaEstimate = { ok: false, reason: 'ray trace failed', isInfinite, stopRadiusMm, fields: Array.isArray(fields) ? fields.length : 0 };
+        } catch (_) {}
+        return { ok: false, reason: 'ray trace failed' };
+    }
+
+    // Compute max radius per surface index (rayPath indexing follows gen-ray-cross-* mapping).
+    const maxR = new Array(rowsToApply.length).fill(0);
+    for (const p of paths) {
+        for (let si = 0; si < rowsToApply.length; si++) {
+            const hit = __zmxGetRayPointAtSurfaceIndex(p, rowsToApply, si);
+            if (!hit) continue;
+            const x = Number(hit.x);
+            const y = Number(hit.y);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+            const r = Math.sqrt(x * x + y * y);
+            if (Number.isFinite(r) && r > maxR[si]) maxR[si] = r;
+        }
+    }
+
+    // Index blocks by blockId for canonical aperture writes.
+    const blockById = new Map();
+    try {
+        if (Array.isArray(activeCfg.blocks)) {
+            for (const b of activeCfg.blocks) {
+                const id = String(b?.blockId ?? '').trim();
+                if (id) blockById.set(id, b);
+            }
+        }
+    } catch (_) {}
+
+    // Persist stop radius into Stop block when possible.
+    try {
+        if (Array.isArray(activeCfg.blocks)) {
+            const stopBlock = activeCfg.blocks.find(b => b && String(b.blockType ?? '') === 'Stop');
+            if (stopBlock) {
+                if (!stopBlock.parameters || typeof stopBlock.parameters !== 'object') stopBlock.parameters = {};
+                stopBlock.parameters.semiDiameter = stopRadiusMm;
+            }
+        }
+    } catch (_) {}
+
+    // Build semidiaOverrides (legacy support) and apply to current rowsToApply.
+    // IMPORTANT: Render is blocks-first, so we also write back into the block.aperture fields.
+    const overrides = (activeCfg.semidiaOverrides && typeof activeCfg.semidiaOverrides === 'object') ? { ...activeCfg.semidiaOverrides } : {};
+    const provKey = (row, surfaceIndex) => {
+        const bid = String(row?._blockId ?? '').trim();
+        const role = String(row?._surfaceRole ?? '').trim();
+        if (bid && role) return `p:${bid}|${role}`;
+        return `i:${surfaceIndex}`;
+    };
+
+    const writeBlockAperture = (row, sd) => {
+        try {
+            const bid = String(row?._blockId ?? '').trim();
+            const role = String(row?._surfaceRole ?? '').trim();
+            if (!bid || !role) return;
+            const blk = blockById.get(bid);
+            if (!blk || typeof blk !== 'object') return;
+            if (!blk.aperture || typeof blk.aperture !== 'object') blk.aperture = {};
+            blk.aperture[role] = sd;
+        } catch (_) {}
+    };
+
+    for (let si = 0; si < rowsToApply.length; si++) {
+        const row = rowsToApply[si];
+        if (!row || typeof row !== 'object') continue;
+        const t = String(row?.['object type'] ?? row?.object ?? '').trim().toLowerCase();
+        if (t === 'object' || t === 'image') continue;
+        if (si === stopIndex || t === 'stop') {
+            row.semidia = stopRadiusMm;
+            continue;
+        }
+
+        const r = Number(maxR[si]);
+        if (!Number.isFinite(r) || r <= minUsefulRmm) continue;
+        const sd = r + marginMm;
+        const key = provKey(row, si);
+        overrides[key] = sd;
+        row.semidia = sd;
+        writeBlockAperture(row, sd);
+    }
+
+    activeCfg.semidiaOverrides = overrides;
+    try {
+        if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
+        activeCfg.metadata.lastSemidiaEstimate = { ok: true, isInfinite, stopRadiusMm, paths: paths.length, wavelengthMicrons: wl };
+    } catch (_) {}
+    return { ok: true, stopRadiusMm, wavelengthMicrons: wl };
+}
 
 function derivePupilAndFocalLengthMmFromParaxial(opticalSystemRows, wavelengthMicrons, preferEntrancePupil) {
     let pupilDiameterMm = DEFAULT_STOP_SEMI_DIAMETER * 2;
@@ -160,6 +568,24 @@ function __blocks_mergeLegacyIndexFieldsIntoExpandedRows(legacyRows, expandedRow
             const lsRaw = legacyObject.semidia;
             const ls = String(lsRaw ?? '').trim();
             if (ls !== '') expandedObject.semidia = lsRaw;
+        }
+    } catch (_) {}
+
+    // Preserve per-surface semidia from legacy/imported rows.
+    // Do this even when row counts differ (Blocks conversion may change surface count).
+    try {
+        const n = Math.min(legacyRows.length, expandedRows.length);
+        for (let i = 0; i < n; i++) {
+            const legacy = legacyRows[i];
+            const row = expandedRows[i];
+            if (!legacy || typeof legacy !== 'object' || !row || typeof row !== 'object') continue;
+
+            const t = String(row?.['object type'] ?? row?.object ?? '').trim().toLowerCase();
+            if (t === 'stop' || t === 'image') continue;
+
+            const lsRaw = legacy.semidia ?? legacy['Semi Diameter'] ?? legacy['semi diameter'] ?? legacy.semiDiameter ?? legacy.semiDia;
+            const ls = String(lsRaw ?? '').trim();
+            if (ls !== '') row.semidia = lsRaw;
         }
     } catch (_) {}
 
@@ -469,6 +895,142 @@ function setupImportZemaxButton() {
     const importBtn = document.getElementById('import-zemax-btn');
     if (!importBtn) return;
 
+    const persistToActiveConfiguration = (rows, sourceRows, objectRows, entrancePupilDiameterMm, filename) => {
+        // Design Intent (Blocks) is driven by systemConfigurations. If we don't update it,
+        // the UI can keep showing the previous Blocks even though the surface table updates.
+        /** @type {any} */
+        let systemConfig = null;
+        try {
+            if (typeof loadSystemConfigurationsFromTableConfig === 'function') {
+                systemConfig = loadSystemConfigurationsFromTableConfig();
+            } else if (typeof loadSystemConfigurations === 'function') {
+                systemConfig = loadSystemConfigurations();
+            }
+        } catch (_) {
+            systemConfig = null;
+        }
+        if (!systemConfig) {
+            try { systemConfig = JSON.parse(localStorage.getItem('systemConfigurations')); } catch (_) {}
+        }
+        if (!systemConfig || !Array.isArray(systemConfig.configurations) || systemConfig.configurations.length === 0) {
+            return { rowsToApply: rows, updated: false };
+        }
+
+        const activeId = systemConfig.activeConfigId;
+        const idx = systemConfig.configurations.findIndex(c => c && String(c.id) === String(activeId));
+        const activeIdx = (idx >= 0) ? idx : 0;
+        const activeCfg = systemConfig.configurations[activeIdx];
+        if (!activeCfg || typeof activeCfg !== 'object') {
+            return { rowsToApply: rows, updated: false };
+        }
+
+        // Only overwrite source/object if present in the .zmx.
+        if (Array.isArray(sourceRows) && sourceRows.length > 0) activeCfg.source = sourceRows;
+        if (Array.isArray(objectRows) && objectRows.length > 0) activeCfg.object = objectRows;
+
+        // Detect whether imported data contains any semidia info.
+        const importedHasAnySemidia = (() => {
+            try {
+                if (!Array.isArray(rows)) return false;
+                const has = (v) => {
+                    if (v === null || v === undefined) return false;
+                    const s = String(v).trim();
+                    return s !== '';
+                };
+                for (const r of rows) {
+                    if (!r || typeof r !== 'object') continue;
+                    const t = String(r?.['object type'] ?? r?.object ?? '').trim().toLowerCase();
+                    if (t === 'image') continue;
+                    if (has(r.semidia ?? r.semiDiameter ?? r.semiDia ?? r['Semi Diameter'] ?? r['semi diameter'])) return true;
+                }
+                return false;
+            } catch (_) {
+                return false;
+            }
+        })();
+
+        // Best-effort: derive Blocks from the imported legacy surface list.
+        // If conversion fails, clear Blocks so Design Intent doesn't remain stale.
+        let rowsToApply = rows;
+        try {
+            const derived = deriveBlocksFromLegacyOpticalSystemRows(rows);
+            const fatals = Array.isArray(derived?.issues) ? derived.issues.filter(i => i && i.severity === 'fatal') : [];
+            if (fatals.length === 0) {
+                activeCfg.schemaVersion = activeCfg.schemaVersion || BLOCK_SCHEMA_VERSION;
+                activeCfg.blocks = Array.isArray(derived?.blocks) ? derived.blocks : [];
+                if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
+                activeCfg.metadata.importAnalyzeMode = false;
+
+                try {
+                    const expanded = expandBlocksToOpticalSystemRows(activeCfg.blocks);
+                    if (expanded && Array.isArray(expanded.rows)) {
+                        try { __blocks_mergeLegacyIndexFieldsIntoExpandedRows(rows, expanded.rows); } catch (_) {}
+                        rowsToApply = expanded.rows;
+                    }
+                } catch (_) {
+                    // If expansion fails, keep legacy rows.
+                }
+
+                // If the imported file had no semidia (e.g., no DIAM records), estimate numeric semidia
+                // from marginal rays so rendering and clearance checks remain meaningful.
+                if (!importedHasAnySemidia && Array.isArray(rowsToApply)) {
+                    try {
+                        __zmxApplySemidiaOverridesFromMarginalRays(activeCfg, rowsToApply, sourceRows, entrancePupilDiameterMm, objectRows);
+                    } catch (e) {
+                        console.warn('⚠️ [ZemaxImport] Failed to derive semidia from marginal rays:', e);
+                    }
+                }
+            } else {
+                activeCfg.blocks = [];
+            }
+        } catch (_) {
+            try { activeCfg.blocks = []; } catch (_) {}
+        }
+
+        // Keep opticalSystem in sync for configs that still read it.
+        activeCfg.opticalSystem = rowsToApply;
+
+        // Treat Zemax import as a full design replacement: keep only one active configuration.
+        // This prevents a previously-loaded systemConfigurations set from lingering.
+        try {
+            const base = String(filename ?? '').trim();
+            if (base) activeCfg.name = base;
+        } catch (_) {}
+
+        try {
+            if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
+            // Mark as imported (best-effort; schema differs slightly between modules).
+            activeCfg.metadata.designer = activeCfg.metadata.designer || { type: 'imported', name: 'zemax', confidence: null };
+            if (activeCfg.metadata.designer && typeof activeCfg.metadata.designer === 'object') {
+                activeCfg.metadata.designer.type = activeCfg.metadata.designer.type || 'imported';
+                if (!activeCfg.metadata.designer.name) activeCfg.metadata.designer.name = 'zemax';
+            }
+        } catch (_) {}
+
+        try {
+            if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
+            activeCfg.metadata.modified = new Date().toISOString();
+        } catch (_) {}
+
+        systemConfig.configurations = [activeCfg];
+        systemConfig.activeConfigId = activeCfg.id;
+
+        // Clear global/shared rows that likely belong to the previous design (best-effort).
+        try { if (Array.isArray(systemConfig.meritFunction)) systemConfig.meritFunction = []; } catch (_) {}
+        try { if (Array.isArray(systemConfig.systemRequirements)) systemConfig.systemRequirements = []; } catch (_) {}
+        try {
+            if (typeof saveSystemConfigurationsFromTableConfig === 'function') {
+                saveSystemConfigurationsFromTableConfig(systemConfig);
+            } else {
+                localStorage.setItem('systemConfigurations', JSON.stringify(systemConfig));
+            }
+        } catch (_) {
+            try { localStorage.setItem('systemConfigurations', JSON.stringify(systemConfig)); } catch (_) {}
+        }
+
+        return { rowsToApply, updated: true };
+    };
+
     importBtn.addEventListener('click', () => {
         if (document.activeElement) document.activeElement.blur();
 
@@ -496,6 +1058,9 @@ function setupImportZemaxButton() {
                     const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
                     const sourceRows = Array.isArray(parsed?.sourceRows) ? parsed.sourceRows : [];
                     const objectRows = Array.isArray(parsed?.objectRows) ? parsed.objectRows : [];
+                    const entrancePupilDiameterMm = parsed?.entrancePupilDiameterMm;
+
+                    const { rowsToApply } = persistToActiveConfiguration(rows, sourceRows, objectRows, entrancePupilDiameterMm, file.name);
 
                     if (!rows || rows.length === 0) throw new Error('Zemax import produced no surfaces.');
 
@@ -503,7 +1068,7 @@ function setupImportZemaxButton() {
                     // Only overwrite Source/Object if present in the .zmx.
                     if (sourceRows.length > 0) saveSourceTableData(sourceRows);
                     if (objectRows.length > 0) saveObjectTableData(objectRows);
-                    saveLensTableData(rows);
+                    saveLensTableData(rowsToApply);
                     localStorage.setItem('loadedFileName', file.name);
 
                     // Update filename UI
@@ -525,7 +1090,7 @@ function setupImportZemaxButton() {
                             tasks.push(Promise.resolve(window.tableObject.setData(objectRows)));
                         }
                         if (window.tableOpticalSystem && typeof window.tableOpticalSystem.setData === 'function') {
-                            tasks.push(Promise.resolve(window.tableOpticalSystem.setData(rows)));
+                            tasks.push(Promise.resolve(window.tableOpticalSystem.setData(rowsToApply)));
                         } else {
                             // no-op
                         }
