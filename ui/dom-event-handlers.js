@@ -961,6 +961,22 @@ function setupImportZemaxButton() {
                 if (!activeCfg.metadata || typeof activeCfg.metadata !== 'object') activeCfg.metadata = {};
                 activeCfg.metadata.importAnalyzeMode = false;
 
+                // If the imported file has no semidia/DIAM records, enable ImagePlane auto semidia (chief ray)
+                // so the Image semidia can be derived later via `calculateImageSemiDiaFromChiefRays()`.
+                if (!importedHasAnySemidia && Array.isArray(activeCfg.blocks)) {
+                    try {
+                        for (const b of activeCfg.blocks) {
+                            if (!b || typeof b !== 'object') continue;
+                            const bt = String(b?.blockType ?? b?.type ?? '').trim();
+                            if (bt !== 'ImagePlane') continue;
+                            if (!b.parameters || typeof b.parameters !== 'object') b.parameters = {};
+                            b.parameters.optimizeSemiDia = 'A';
+                        }
+                    } catch (_) {
+                        // ignore
+                    }
+                }
+
                 try {
                     const expanded = expandBlocksToOpticalSystemRows(activeCfg.blocks);
                     if (expanded && Array.isArray(expanded.rows)) {
@@ -1028,7 +1044,7 @@ function setupImportZemaxButton() {
             try { localStorage.setItem('systemConfigurations', JSON.stringify(systemConfig)); } catch (_) {}
         }
 
-        return { rowsToApply, updated: true };
+        return { rowsToApply, updated: true, importedHasAnySemidia };
     };
 
     importBtn.addEventListener('click', () => {
@@ -1060,7 +1076,7 @@ function setupImportZemaxButton() {
                     const objectRows = Array.isArray(parsed?.objectRows) ? parsed.objectRows : [];
                     const entrancePupilDiameterMm = parsed?.entrancePupilDiameterMm;
 
-                    const { rowsToApply } = persistToActiveConfiguration(rows, sourceRows, objectRows, entrancePupilDiameterMm, file.name);
+                    const { rowsToApply, importedHasAnySemidia } = persistToActiveConfiguration(rows, sourceRows, objectRows, entrancePupilDiameterMm, file.name);
 
                     if (!rows || rows.length === 0) throw new Error('Zemax import produced no surfaces.');
 
@@ -1103,6 +1119,23 @@ function setupImportZemaxButton() {
                             // Wavefront Object dropdown is derived from tableObject; refresh explicitly.
                             try { if (typeof window.updateWavefrontObjectSelect === 'function') window.updateWavefrontObjectSelect(); } catch (_) {}
                             try { refreshBlockInspector(); } catch (_) {}
+
+                            // If semidia was missing in the imported file, compute Image semidia from chief rays.
+                            // Do it silently (no alert popups) to keep import UX smooth.
+                            if (!importedHasAnySemidia && typeof window.calculateImageSemiDiaFromChiefRays === 'function') {
+                                try {
+                                    const prevAlert = globalThis.alert;
+                                    try { globalThis.alert = () => {}; } catch (_) {}
+                                    Promise.resolve()
+                                        .then(() => window.calculateImageSemiDiaFromChiefRays())
+                                        .catch(() => {})
+                                        .finally(() => {
+                                            try { globalThis.alert = prevAlert; } catch (_) {}
+                                        });
+                                } catch (_) {
+                                    // ignore
+                                }
+                            }
                         });
                     } catch (err) {
                         try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
