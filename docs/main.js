@@ -874,6 +874,8 @@ function updateCameraViewBounds() {
     }
     
     try {
+        const sceneBounds = __coopt_calculateOpticalElementsBounds(window.scene);
+
         // 光学系のZ範囲とY範囲を動的に計算
         const rangeData = calculateOpticalSystemZRange();
         if (!rangeData) {
@@ -881,7 +883,17 @@ function updateCameraViewBounds() {
             return;
         }
         
-        const { minZ, maxZ, centerZ, totalLength, maxY } = rangeData;
+        let { minZ, maxZ, centerZ, totalLength, maxY } = rangeData;
+        if (sceneBounds) {
+            minZ = Math.min(minZ, sceneBounds.min.z);
+            maxZ = Math.max(maxZ, sceneBounds.max.z);
+            centerZ = (minZ + maxZ) / 2;
+            totalLength = maxZ - minZ;
+            const ySpan = sceneBounds.max.y - sceneBounds.min.y;
+            if (Number.isFinite(ySpan) && ySpan > 0) {
+                maxY = Math.max(maxY || 0, ySpan / 2);
+            }
+        }
         console.log(`📷 Optical system: maxY=${maxY}, totalLength=${totalLength}`);
         
         // 光線の開始位置も考慮
@@ -900,14 +912,15 @@ function updateCameraViewBounds() {
         
         // 描画枠全体に光学系が収まるように視野サイズを計算
         const marginFactor = 1.1;
-        const visibleHeight = maxY * 2 * marginFactor;
+        const safeMaxY = (Number.isFinite(maxY) && maxY > 0) ? maxY : 50;
+        const visibleHeight = safeMaxY * 2 * marginFactor;
         const visibleWidth = effectiveTotalLength * marginFactor;
         
         console.log(`📷 Visible size: ${visibleWidth.toFixed(1)} x ${visibleHeight.toFixed(1)}`);
         
         // アスペクト比に基づいて視野範囲を計算
         let viewHeight, viewWidth;
-        const contentAspect = visibleWidth / visibleHeight;
+        const contentAspect = visibleWidth / Math.max(1e-9, visibleHeight);
         
         if (contentAspect > aspect) {
             viewWidth = visibleWidth / 2;
@@ -928,6 +941,53 @@ function updateCameraViewBounds() {
         console.log(`📷 Camera bounds: [${camera.left.toFixed(1)}, ${camera.right.toFixed(1)}, ${camera.top.toFixed(1)}, ${camera.bottom.toFixed(1)}]`);
     } catch (error) {
         console.error('❌ Error updating camera view bounds:', error);
+    }
+}
+
+function __coopt_calculateOpticalElementsBounds(scene) {
+    try {
+        if (!scene || typeof scene.traverse !== 'function') return null;
+
+        const bounds = new THREE.Box3();
+        let hasAny = false;
+
+        scene.traverse((obj) => {
+            if (!obj || !obj.isObject3D) return;
+            if (!obj.visible) return;
+            if (obj.isCamera || obj.isLight) return;
+            if (!obj.isMesh && !obj.isLine && !obj.isPoints) return;
+
+            const ud = obj.userData || {};
+            const name = (obj.name || '').toLowerCase();
+            const isProbablyOptical =
+                ud.isOpticalElement === true ||
+                ud.type === 'surface' ||
+                ud.type === 'aperture' ||
+                ud.type === 'ray' ||
+                name.includes('surface') ||
+                name.includes('lens') ||
+                name.includes('aperture') ||
+                name.includes('ray');
+
+            if (!isProbablyOptical) return;
+
+            const objBounds = new THREE.Box3().setFromObject(obj);
+            if (!Number.isFinite(objBounds.min.x) || !Number.isFinite(objBounds.max.x)) return;
+            if (!Number.isFinite(objBounds.min.y) || !Number.isFinite(objBounds.max.y)) return;
+            if (!Number.isFinite(objBounds.min.z) || !Number.isFinite(objBounds.max.z)) return;
+
+            if (!hasAny) {
+                bounds.copy(objBounds);
+                hasAny = true;
+            } else {
+                bounds.union(objBounds);
+            }
+        });
+
+        return hasAny ? bounds : null;
+    } catch (e) {
+        console.warn('Failed to calculate scene bounds:', e);
+        return null;
     }
 }
 
@@ -981,6 +1041,18 @@ function setCameraForYZCrossSection(options = {}) {
         
         // 光学系のZ範囲とY範囲を動的に計算
         const { minZ, maxZ, centerZ, totalLength, maxY } = calculateOpticalSystemZRange();
+        const sceneBounds = __coopt_calculateOpticalElementsBounds(scene);
+
+        const fitMinZ0 = sceneBounds ? Math.min(minZ, sceneBounds.min.z) : minZ;
+        const fitMaxZ0 = sceneBounds ? Math.max(maxZ, sceneBounds.max.z) : maxZ;
+        const fitTotalLength0 = fitMaxZ0 - fitMinZ0;
+        const safeMaxY = (() => {
+            const fromRows = (Number.isFinite(maxY) && maxY > 0) ? maxY : 0;
+            if (!sceneBounds) return fromRows || 50;
+            const ySpan = sceneBounds.max.y - sceneBounds.min.y;
+            const fromScene = (Number.isFinite(ySpan) && ySpan > 0) ? ySpan / 2 : 0;
+            return Math.max(fromRows, fromScene, 50);
+        })();
         
         // Y-Z断面を正面から見るためにX軸負方向からカメラを配置
         // Z軸は光軸（画面横方向）、Y軸は上下方向、X軸は視線方向
@@ -989,8 +1061,8 @@ function setCameraForYZCrossSection(options = {}) {
         // Popupでは「光学系が画面に収まる」優先のため、固定マージンは無効化できる
         const includeRayStartMargin = options.includeRayStartMargin !== false;
         const rayStartMargin = includeRayStartMargin ? 25 : 0;
-        const effectiveMinZ = Math.min(minZ, -rayStartMargin);
-        const effectiveMaxZ = maxZ;
+        const effectiveMinZ = Math.min(fitMinZ0, -rayStartMargin);
+        const effectiveMaxZ = fitMaxZ0;
         const effectiveTotalLength = effectiveMaxZ - effectiveMinZ;
         const effectiveCenterZ = (effectiveMinZ + effectiveMaxZ) / 2;
 
@@ -1018,12 +1090,14 @@ function setCameraForYZCrossSection(options = {}) {
         
         // 描画枠全体に光学系が収まるように視野サイズを計算
         const marginFactor = 1.1; // マージンを10%
-        const visibleHeight = maxY * 2 * marginFactor; // Y方向の高さ（両側+マージン）
-        const visibleWidth = effectiveTotalLength * marginFactor; // Z方向の幅（光線開始位置を含む+マージン）
+        const visibleHeight = safeMaxY * 2 * marginFactor; // Y方向の高さ（両側+マージン）
+        const visibleWidth = Math.max(1e-9, effectiveTotalLength) * marginFactor; // Z方向の幅（光線開始位置を含む+マージン）
         
         // OrthographicCameraの場合、視野範囲を直接設定
         if (camera.isOrthographicCamera) {
-            const preserveCurrentOrthoBounds = options.preserveCurrentOrthoBounds === true;
+            const preserveRequested = options.preserveCurrentOrthoBounds === true;
+            const hasReliableExtent = (Number.isFinite(maxY) && maxY > 0);
+            const preserveCurrentOrthoBounds = preserveRequested && hasReliableExtent;
             if (preserveCurrentOrthoBounds) {
                 // User already adjusted the view (pan/zoom/rotate).
                 // Keep the current bounds so pressing Render does not change the scale.
@@ -1041,7 +1115,7 @@ function setCameraForYZCrossSection(options = {}) {
                 let viewHeight, viewWidth;
 
                 // 光学系のアスペクト比
-                const contentAspect = visibleWidth / visibleHeight;
+                const contentAspect = visibleWidth / Math.max(1e-9, visibleHeight);
 
                 if (contentAspect > aspect) {
                     // 光学系が横長 → 横幅を基準に
@@ -1133,10 +1207,21 @@ function setCameraForXZCrossSection(options = {}) {
         }
 
         const { minZ, maxZ, maxY } = rangeData;
+        const sceneBounds = __coopt_calculateOpticalElementsBounds(scene);
+
+        const fitMinZ0 = sceneBounds ? Math.min(minZ, sceneBounds.min.z) : minZ;
+        const fitMaxZ0 = sceneBounds ? Math.max(maxZ, sceneBounds.max.z) : maxZ;
+        const safeMaxY = (() => {
+            const fromRows = (Number.isFinite(maxY) && maxY > 0) ? maxY : 0;
+            if (!sceneBounds) return fromRows || 50;
+            const ySpan = sceneBounds.max.y - sceneBounds.min.y;
+            const fromScene = (Number.isFinite(ySpan) && ySpan > 0) ? ySpan / 2 : 0;
+            return Math.max(fromRows, fromScene, 50);
+        })();
         const includeRayStartMargin = options.includeRayStartMargin !== false;
         const rayStartMargin = includeRayStartMargin ? 25 : 0;
-        const effectiveMinZ = Math.min(minZ, -rayStartMargin);
-        const effectiveMaxZ = maxZ;
+        const effectiveMinZ = Math.min(fitMinZ0, -rayStartMargin);
+        const effectiveMaxZ = fitMaxZ0;
         const effectiveTotalLength = effectiveMaxZ - effectiveMinZ;
         const effectiveCenterZ = (effectiveMinZ + effectiveMaxZ) / 2;
 
@@ -1161,11 +1246,13 @@ function setCameraForXZCrossSection(options = {}) {
         }
 
         const marginFactor = 1.1;
-        const visibleHeight = maxY * 2 * marginFactor;
-        const visibleWidth = effectiveTotalLength * marginFactor;
+        const visibleHeight = safeMaxY * 2 * marginFactor;
+        const visibleWidth = Math.max(1e-9, effectiveTotalLength) * marginFactor;
 
         if (camera.isOrthographicCamera) {
-            const preserveCurrentOrthoBounds = options.preserveCurrentOrthoBounds === true;
+            const preserveRequested = options.preserveCurrentOrthoBounds === true;
+            const hasReliableExtent = (Number.isFinite(maxY) && maxY > 0);
+            const preserveCurrentOrthoBounds = preserveRequested && hasReliableExtent;
             if (preserveCurrentOrthoBounds) {
                 expandOrthoBoundsToAspect(camera, aspect);
                 console.log('📷 [XZ] Preserving current orthographic bounds');
@@ -1178,7 +1265,7 @@ function setCameraForXZCrossSection(options = {}) {
                 console.log('📷 [XZ] Using preserved Draw Cross orthographic bounds');
             } else {
                 let viewHeight, viewWidth;
-                const contentAspect = visibleWidth / visibleHeight;
+                const contentAspect = visibleWidth / Math.max(1e-9, visibleHeight);
 
                 if (contentAspect > aspect) {
                     viewWidth = visibleWidth / 2;

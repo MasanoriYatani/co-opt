@@ -230,7 +230,7 @@ const ensurePopupMessageHandler = () => {
                         preserveDrawCrossBounds: userAdjustedView === true,
                         preserveCurrentOrthoBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
-                        ...(targetOverride ? { targetOverride } : {})
+                        ...(userAdjustedView === true && targetOverride ? { targetOverride } : {})
                     });
                 } else if (viewAxis === 'YZ' && typeof window.setCameraForYZCrossSection === 'function') {
                     window.setCameraForYZCrossSection({
@@ -242,7 +242,7 @@ const ensurePopupMessageHandler = () => {
                         preserveDrawCrossBounds: userAdjustedView === true,
                         preserveCurrentOrthoBounds: userAdjustedView === true,
                         storeDrawCrossBounds: userAdjustedView !== true,
-                        ...(targetOverride ? { targetOverride } : {})
+                        ...(userAdjustedView === true && targetOverride ? { targetOverride } : {})
                     });
                 } else {
                     console.warn(`⚠️ Popup window/camera not ready for setCameraFor${viewAxis}CrossSection`);
