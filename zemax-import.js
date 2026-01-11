@@ -17,6 +17,21 @@ function parseNumberOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+function normalizeImportedMaterialName(material) {
+  const s = String(material ?? '').trim();
+  if (s === '') return '';
+  const up = s.toUpperCase();
+  if (up === 'AIR' || up === 'VACUUM') return '';
+
+  // co-opt glass catalog includes some Ohara names with a space before the trailing number
+  // (e.g. "S-TIH 6"). Zemax uses whitespace-free names, so restore this for the common S-XXXn pattern.
+  if (!/\s/.test(s) && /^S-[A-Z]{3,}\d+$/i.test(s)) {
+    return s.replace(/^S-([A-Z]{3,})(\d+)$/i, 'S-$1 $2');
+  }
+
+  return s;
+}
+
 function decodeZmxArrayBuffer(arrayBuffer) {
   const bytes = new Uint8Array(arrayBuffer);
   if (bytes.length >= 2) {
@@ -140,6 +155,18 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
   const rows = [];
   const issues = [];
 
+  // System-level data (optional)
+  /** @type {Map<number, {wavelength:number, weight:number}>} */
+  const wavelengthsByIndex = new Map();
+  let primaryWavelengthIndex = null;
+  /** @type {number[]} */
+  let fieldXs = [];
+  /** @type {number[]} */
+  let fieldYs = [];
+  /** @type {number[]} */
+  let fieldWs = [];
+  let entrancePupilDiameterMm = null;
+
   let currentSurf = null;
 
   const addIssue = (severity, message) => {
@@ -155,6 +182,105 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
     if (tokens.length === 0) continue;
 
     const key = String(tokens[0] ?? '').toUpperCase();
+
+    // --- Global / system-level records ---
+    if (key === 'WAVM') {
+      // WAVM <index> <wavelength_um> <weight>
+      const idx = parseNumberOrNull(tokens[1]);
+      const wl = parseNumberOrNull(tokens[2]);
+      const wt = parseNumberOrNull(tokens[3]);
+      const ii = (idx !== null && Number.isFinite(idx)) ? Math.trunc(idx) : null;
+      if (!ii || ii <= 0 || wl === null || !Number.isFinite(wl) || wl <= 0) {
+        addIssue('warning', `Invalid WAVM at line ${lineNo + 1}: ${line}`);
+        continue;
+      }
+      wavelengthsByIndex.set(ii, {
+        wavelength: wl,
+        weight: (wt !== null && Number.isFinite(wt)) ? wt : 1
+      });
+      continue;
+    }
+
+    if (key === 'PWAV') {
+      const idx = parseNumberOrNull(tokens[1]);
+      const ii = (idx !== null && Number.isFinite(idx)) ? Math.trunc(idx) : null;
+      if (!ii || ii <= 0) {
+        addIssue('warning', `Invalid PWAV at line ${lineNo + 1}: ${line}`);
+        continue;
+      }
+      primaryWavelengthIndex = ii;
+      continue;
+    }
+
+    if (key === 'ENPD') {
+      const v = parseNumberOrNull(tokens[1]);
+      if (v !== null && Number.isFinite(v) && v > 0) entrancePupilDiameterMm = v;
+      continue;
+    }
+
+    // Zemax may store fields as list lines ("XFLN x1 x2 ...") or index lines ("XFLN <i> <x>")
+    const parseFieldList = (toks) => {
+      const out = [];
+      for (let k = 1; k < toks.length; k++) {
+        const n = parseNumberOrNull(toks[k]);
+        if (n === null || !Number.isFinite(n)) continue;
+        out.push(n);
+      }
+      return out;
+    };
+    const parseFieldIndexed = (toks) => {
+      const idx = parseNumberOrNull(toks[1]);
+      const val = parseNumberOrNull(toks[2]);
+      if (idx === null || val === null || !Number.isFinite(idx) || !Number.isFinite(val)) return null;
+      const ii = Math.trunc(idx);
+      if (ii <= 0) return null;
+      return { index: ii, value: val };
+    };
+
+    if (key === 'XFLN') {
+      if (tokens.length === 3) {
+        const p = parseFieldIndexed(tokens);
+        if (p) {
+          const need = Math.max(fieldXs.length, p.index);
+          while (fieldXs.length < need) fieldXs.push(0);
+          fieldXs[p.index - 1] = p.value;
+          continue;
+        }
+      }
+      const list = parseFieldList(tokens);
+      if (list.length > 0) fieldXs = list;
+      continue;
+    }
+
+    if (key === 'YFLN') {
+      if (tokens.length === 3) {
+        const p = parseFieldIndexed(tokens);
+        if (p) {
+          const need = Math.max(fieldYs.length, p.index);
+          while (fieldYs.length < need) fieldYs.push(0);
+          fieldYs[p.index - 1] = p.value;
+          continue;
+        }
+      }
+      const list = parseFieldList(tokens);
+      if (list.length > 0) fieldYs = list;
+      continue;
+    }
+
+    if (key === 'FWGN') {
+      if (tokens.length === 3) {
+        const p = parseFieldIndexed(tokens);
+        if (p) {
+          const need = Math.max(fieldWs.length, p.index);
+          while (fieldWs.length < need) fieldWs.push(0);
+          fieldWs[p.index - 1] = p.value;
+          continue;
+        }
+      }
+      const list = parseFieldList(tokens);
+      if (list.length > 0) fieldWs = list;
+      continue;
+    }
 
     if (key === 'SURF') {
       const idx = parseNumberOrNull(tokens[1]);
@@ -213,7 +339,7 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
     if (key === 'GLAS') {
       const row = ensureRow(rows, currentSurf);
       const name = String(tokens[1] ?? '').trim();
-      if (!isBlank(name)) row.material = name;
+      row.material = normalizeImportedMaterialName(name);
       continue;
     }
 
@@ -300,7 +426,56 @@ export function parseZMXTextToOpticalSystemRows(zmxText, options = {}) {
     throw err;
   }
 
-  return { rows, issues };
+  // Convert system-level records into co-opt table rows (if present)
+  /** @type {{id:number, wavelength:number, weight:number, primary:string, angle:number}[]} */
+  const sourceRows = [];
+  if (wavelengthsByIndex.size > 0) {
+    const indices = Array.from(wavelengthsByIndex.keys()).sort((a, b) => a - b);
+    for (let i = 0; i < indices.length; i++) {
+      const idx = indices[i];
+      const ent = wavelengthsByIndex.get(idx);
+      if (!ent) continue;
+      sourceRows.push({
+        id: i + 1,
+        wavelength: ent.wavelength,
+        weight: ent.weight,
+        primary: '',
+        angle: 0
+      });
+    }
+
+    // Ensure a primary wavelength exists
+    const pw = (primaryWavelengthIndex !== null && Number.isFinite(primaryWavelengthIndex)) ? Math.trunc(primaryWavelengthIndex) : 1;
+    const primaryOneBased = Math.max(1, Math.min(sourceRows.length, pw));
+    for (let i = 0; i < sourceRows.length; i++) sourceRows[i].primary = '';
+    if (sourceRows[primaryOneBased - 1]) sourceRows[primaryOneBased - 1].primary = 'Primary Wavelength';
+  }
+
+  /** @type {{id:number, xHeightAngle:number, yHeightAngle:number, position:string, angle:number}[]} */
+  const objectRows = [];
+  const fieldCount = Math.max(fieldXs.length, fieldYs.length, fieldWs.length);
+  if (fieldCount > 0) {
+    for (let i = 0; i < fieldCount; i++) {
+      const x = Number.isFinite(fieldXs[i]) ? fieldXs[i] : 0;
+      const y = Number.isFinite(fieldYs[i]) ? fieldYs[i] : 0;
+      // co-opt currently doesn't store per-field weight, but keep a stable row even if FWGN is present.
+      objectRows.push({
+        id: i + 1,
+        xHeightAngle: x,
+        yHeightAngle: y,
+        position: 'Rectangle',
+        angle: 0
+      });
+    }
+  }
+
+  return {
+    rows,
+    issues,
+    sourceRows,
+    objectRows,
+    entrancePupilDiameterMm
+  };
 }
 
 export function parseZMXArrayBufferToOpticalSystemRows(arrayBuffer, options = {}) {

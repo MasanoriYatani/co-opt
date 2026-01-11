@@ -494,10 +494,15 @@ function setupImportZemaxButton() {
                     const parsed = parseZMXArrayBufferToOpticalSystemRows(buf, { filename: file.name });
                     const rows = parsed?.rows || [];
                     const issues = Array.isArray(parsed?.issues) ? parsed.issues : [];
+                    const sourceRows = Array.isArray(parsed?.sourceRows) ? parsed.sourceRows : [];
+                    const objectRows = Array.isArray(parsed?.objectRows) ? parsed.objectRows : [];
 
                     if (!rows || rows.length === 0) throw new Error('Zemax import produced no surfaces.');
 
                     // Persist + apply
+                    // Only overwrite Source/Object if present in the .zmx.
+                    if (sourceRows.length > 0) saveSourceTableData(sourceRows);
+                    if (objectRows.length > 0) saveObjectTableData(objectRows);
                     saveLensTableData(rows);
                     localStorage.setItem('loadedFileName', file.name);
 
@@ -512,17 +517,28 @@ function setupImportZemaxButton() {
 
                     try { globalThis.__configurationAutoSaveDisabled = true; } catch (_) {}
                     try {
-                        if (window.tableOpticalSystem && typeof window.tableOpticalSystem.setData === 'function') {
-                            Promise.resolve(window.tableOpticalSystem.setData(rows)).finally(() => {
-                                try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
-                                try { updateSurfaceNumberSelect(); } catch (_) {}
-                                try { if (typeof window.refreshConfigurationUI === 'function') window.refreshConfigurationUI(); } catch (_) {}
-                                try { if (typeof window.updatePSFObjectOptions === 'function') window.updatePSFObjectOptions(); } catch (_) {}
-                                try { refreshBlockInspector(); } catch (_) {}
-                            });
-                        } else {
-                            try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                        const tasks = [];
+                        if (sourceRows.length > 0 && window.tableSource && typeof window.tableSource.setData === 'function') {
+                            tasks.push(Promise.resolve(window.tableSource.setData(sourceRows)));
                         }
+                        if (objectRows.length > 0 && window.tableObject && typeof window.tableObject.setData === 'function') {
+                            tasks.push(Promise.resolve(window.tableObject.setData(objectRows)));
+                        }
+                        if (window.tableOpticalSystem && typeof window.tableOpticalSystem.setData === 'function') {
+                            tasks.push(Promise.resolve(window.tableOpticalSystem.setData(rows)));
+                        } else {
+                            // no-op
+                        }
+
+                        Promise.allSettled(tasks).finally(() => {
+                            try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
+                            try { updateSurfaceNumberSelect(); } catch (_) {}
+                            try { if (typeof window.refreshConfigurationUI === 'function') window.refreshConfigurationUI(); } catch (_) {}
+                            try { if (typeof window.updatePSFObjectOptions === 'function') window.updatePSFObjectOptions(); } catch (_) {}
+                            // Wavefront Object dropdown is derived from tableObject; refresh explicitly.
+                            try { if (typeof window.updateWavefrontObjectSelect === 'function') window.updateWavefrontObjectSelect(); } catch (_) {}
+                            try { refreshBlockInspector(); } catch (_) {}
+                        });
                     } catch (err) {
                         try { globalThis.__configurationAutoSaveDisabled = false; } catch (_) {}
                         throw err;
